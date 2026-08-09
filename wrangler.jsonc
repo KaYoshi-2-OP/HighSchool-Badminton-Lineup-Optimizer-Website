@@ -5,6 +5,12 @@
   "compatibility_date": "2026-08-09",
   "compatibility_flags": ["nodejs_compat"],
   "no_bundle": true,
+  "rules": [
+  {
+    "type": "ESModule",
+    "globs": ["**/*.js"]
+  }
+],
   "assets": {
     "binding": "ASSETS",
     "directory": "./dist/client",
