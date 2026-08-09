@@ -158,7 +158,7 @@ function meetWinProbability(probabilities: number[]) {
   return distribution.slice(9).reduce((sum, probability) => sum + probability, 0);
 }
 
-export default function DashboardClient() {
+export default function DashboardClient({ currentUser }: { currentUser: { username: string } }) {
   const [tab, setTab] = useState<Tab>("dashboard");
   const [data, setData] = useState<DashboardData | null>(null);
   const [opponentId, setOpponentId] = useState("");
@@ -170,6 +170,7 @@ export default function DashboardClient() {
   const [resultRows, setResultRows] = useState<ResultRow[]>(emptyResultRows);
   const [receipt, setReceipt] = useState<MeetReceipt | null>(null);
   const [resultAction, setResultAction] = useState<"preview" | "confirm" | null>(null);
+  const [signingOut, setSigningOut] = useState(false);
   const [notice, setNotice] = useState<{ tone: "success" | "error"; text: string } | null>(null);
   const rosterInput = useRef<HTMLInputElement>(null);
   const matchInput = useRef<HTMLInputElement>(null);
@@ -180,6 +181,10 @@ export default function DashboardClient() {
       const query = new URLSearchParams();
       if (nextOpponent) query.set("opponent", nextOpponent);
       const response = await fetch(`/api/data?${query}`);
+      if (response.status === 401) {
+        window.location.reload();
+        return;
+      }
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error ?? "Could not load data.");
       setData(payload);
@@ -201,6 +206,15 @@ export default function DashboardClient() {
     setOptimization(null);
     setReceipt(null);
     await loadData(value);
+  };
+
+  const signOut = async () => {
+    setSigningOut(true);
+    try {
+      await fetch("/api/auth", { method: "DELETE" });
+    } finally {
+      window.location.reload();
+    }
   };
 
   const updateResultRow = (index: number, field: keyof ResultRow, value: string) => {
@@ -322,7 +336,14 @@ export default function DashboardClient() {
       <main className="main-content">
         <header className="topbar">
           <div><p className="eyebrow">ONE HOME SCHOOL · MULTI-OPPONENT ANALYTICS</p><h1>{tab === "dashboard" ? "Lineup projection" : tab === "players" ? "Player ratings" : tab === "results" ? "Enter true match results" : "Historical data"}</h1></div>
-          {data?.demo && <span className="demo-badge">Demo dataset</span>}
+          <div className="topbar-actions">
+            {data?.demo && <span className="demo-badge">Demo dataset</span>}
+            <div className="account-summary" aria-label={`Signed in as ${currentUser.username}`}>
+              <span aria-hidden="true">{currentUser.username.charAt(0).toUpperCase()}</span>
+              <div><small>SIGNED IN AS</small><strong>{currentUser.username}</strong></div>
+            </div>
+            <button className="sign-out-button" type="button" disabled={signingOut} onClick={() => void signOut()}>{signingOut ? "Signing out…" : "Sign out"}</button>
+          </div>
         </header>
 
         {notice && <div role="status" className={`notice ${notice.tone}`}><Icon name={notice.tone === "success" ? "check" : "data"}/><span>{notice.text}</span><button aria-label="Dismiss message" onClick={() => setNotice(null)}>×</button></div>}

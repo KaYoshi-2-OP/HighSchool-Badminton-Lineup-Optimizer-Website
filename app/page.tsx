@@ -1,5 +1,5 @@
-import DashboardClient from "./dashboard-client";
+import SessionGate from "./session-gate";
 
 export default function Home() {
-  return <DashboardClient />;
+  return <SessionGate />;
 }

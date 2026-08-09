@@ -4,9 +4,12 @@ function message(error: unknown) {
 
 export async function GET(request: Request) {
   try {
+    const { getAccountFromCookieHeader } = await import("../../../lib/auth");
     const { getDashboard } = await import("../../../lib/server-store");
+    const account = await getAccountFromCookieHeader(request.headers.get("cookie"));
+    if (!account) return Response.json({ error: "Sign in to continue." }, { status: 401 });
     const url = new URL(request.url);
-    const data = await getDashboard(url.searchParams.get("opponent") ?? undefined);
+    const data = await getDashboard(account, url.searchParams.get("opponent") ?? undefined);
     return Response.json(data);
   } catch (error) {
     return Response.json({ error: message(error) }, { status: 500 });
@@ -15,7 +18,11 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
+    const { assertSameOrigin, getAccountFromCookieHeader } = await import("../../../lib/auth");
     const { confirmMeet, importMatches, importRosters, previewMeet } = await import("../../../lib/server-store");
+    assertSameOrigin(request);
+    const account = await getAccountFromCookieHeader(request.headers.get("cookie"));
+    if (!account) return Response.json({ error: "Sign in to continue." }, { status: 401 });
     const payload = await request.json() as {
       action?: string;
       homeSchoolId?: string;
@@ -23,16 +30,16 @@ export async function POST(request: Request) {
       rows?: Array<Record<string, string | number | null>>;
     };
     if (payload.action === "import_rosters") {
-      return Response.json(await importRosters(payload.rows ?? []));
+      return Response.json(await importRosters(account, payload.rows ?? []));
     }
     if (payload.action === "import_matches") {
-      return Response.json(await importMatches(payload.rows ?? []));
+      return Response.json(await importMatches(account, payload.rows ?? []));
     }
     if (payload.action === "preview_meet") {
-      return Response.json(await previewMeet(payload.rows ?? []));
+      return Response.json(await previewMeet(account, payload.rows ?? []));
     }
     if (payload.action === "confirm_meet") {
-      return Response.json(await confirmMeet(payload.rows ?? []));
+      return Response.json(await confirmMeet(account, payload.rows ?? []));
     }
     return Response.json({ error: "Unknown action." }, { status: 400 });
   } catch (error) {

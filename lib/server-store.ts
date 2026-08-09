@@ -22,6 +22,11 @@ const RATING_MODEL_VERSION = "home-k2-fixed-home-calibrated-v3";
 
 type CsvRow = Record<string, string | number | null | undefined>;
 
+export type AccountContext = {
+  id: string;
+  username: string;
+};
+
 type DbPlayer = {
   id: string;
   school_id: string;
@@ -61,14 +66,39 @@ let schemaReady = false;
 async function ensureSchema() {
   if (schemaReady) return;
   await db().batch([
+    db().prepare(`CREATE TABLE IF NOT EXISTS accounts (
+      id TEXT PRIMARY KEY NOT NULL,
+      username TEXT NOT NULL,
+      normalized_username TEXT NOT NULL,
+      password_hash TEXT NOT NULL,
+      password_salt TEXT NOT NULL,
+      password_iterations INTEGER NOT NULL,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL
+    )`),
+    db().prepare("CREATE UNIQUE INDEX IF NOT EXISTS accounts_username_unique ON accounts (normalized_username)"),
+    db().prepare(`CREATE TABLE IF NOT EXISTS sessions (
+      id TEXT PRIMARY KEY NOT NULL,
+      account_id TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL
+    )`),
+    db().prepare("CREATE INDEX IF NOT EXISTS sessions_account_idx ON sessions (account_id)"),
+    db().prepare("CREATE INDEX IF NOT EXISTS sessions_expires_idx ON sessions (expires_at)"),
+    db().prepare(`CREATE TABLE IF NOT EXISTS login_attempts (
+      normalized_username TEXT PRIMARY KEY NOT NULL,
+      failed_count INTEGER DEFAULT 0 NOT NULL,
+      window_started_at TEXT NOT NULL,
+      locked_until TEXT
+    )`),
     db().prepare(`CREATE TABLE IF NOT EXISTS schools (
       id TEXT PRIMARY KEY NOT NULL,
+      account_id TEXT,
       name TEXT NOT NULL,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL
     )`),
-    db().prepare("CREATE UNIQUE INDEX IF NOT EXISTS schools_name_unique ON schools (name)"),
     db().prepare(`CREATE TABLE IF NOT EXISTS players (
       id TEXT PRIMARY KEY NOT NULL,
+      account_id TEXT,
       school_id TEXT NOT NULL,
       player_code TEXT NOT NULL,
       display_name TEXT NOT NULL,
@@ -85,6 +115,7 @@ async function ensureSchema() {
     db().prepare("CREATE INDEX IF NOT EXISTS players_school_active_idx ON players (school_id, active)"),
     db().prepare(`CREATE TABLE IF NOT EXISTS player_aliases (
       id TEXT PRIMARY KEY NOT NULL,
+      account_id TEXT,
       school_id TEXT NOT NULL,
       alias_code TEXT NOT NULL,
       player_id TEXT NOT NULL
@@ -93,6 +124,7 @@ async function ensureSchema() {
     db().prepare("CREATE INDEX IF NOT EXISTS player_alias_player_idx ON player_aliases (player_id)"),
     db().prepare(`CREATE TABLE IF NOT EXISTS match_events (
       id TEXT PRIMARY KEY NOT NULL,
+      account_id TEXT,
       match_date TEXT NOT NULL,
       season_year INTEGER NOT NULL,
       season_weight INTEGER DEFAULT 1 NOT NULL,
@@ -110,6 +142,7 @@ async function ensureSchema() {
     db().prepare("CREATE INDEX IF NOT EXISTS match_events_home_date_idx ON match_events (home_school_id, match_date)"),
     db().prepare(`CREATE TABLE IF NOT EXISTS opponent_positions (
       id TEXT PRIMARY KEY NOT NULL,
+      account_id TEXT,
       home_school_id TEXT NOT NULL,
       opponent_school_id TEXT NOT NULL,
       position TEXT NOT NULL,
@@ -124,6 +157,7 @@ async function ensureSchema() {
     )`),
     db().prepare(`CREATE TABLE IF NOT EXISTS player_seasons (
       id TEXT PRIMARY KEY NOT NULL,
+      account_id TEXT,
       player_id TEXT NOT NULL,
       school_id TEXT NOT NULL,
       season INTEGER NOT NULL,
@@ -134,6 +168,7 @@ async function ensureSchema() {
     db().prepare("CREATE INDEX IF NOT EXISTS player_seasons_school_season_idx ON player_seasons (school_id, season)"),
     db().prepare(`CREATE TABLE IF NOT EXISTS opponent_calibrations (
       id TEXT PRIMARY KEY NOT NULL,
+      account_id TEXT,
       home_school_id TEXT NOT NULL,
       opponent_school_id TEXT NOT NULL,
       elo_offset REAL NOT NULL,
@@ -143,13 +178,77 @@ async function ensureSchema() {
       meet_count INTEGER NOT NULL
     )`),
     db().prepare("CREATE UNIQUE INDEX IF NOT EXISTS opponent_calibration_unique ON opponent_calibrations (home_school_id, opponent_school_id)"),
+  ]);
+
+  for (const table of [
+    "schools",
+    "players",
+    "player_aliases",
+    "match_events",
+    "opponent_positions",
+    "player_seasons",
+    "opponent_calibrations",
+  ]) {
+    const columns = await db().prepare(`PRAGMA table_info(${table})`).all<{ name: string }>();
+    if (!columns.results.some((column) => column.name === "account_id")) {
+      await db().prepare(`ALTER TABLE ${table} ADD COLUMN account_id TEXT`).run();
+    }
+  }
+
+  await db().batch([
+    db().prepare("DROP INDEX IF EXISTS accounts_email_unique"),
+    db().prepare("DROP INDEX IF EXISTS schools_name_unique"),
+    db().prepare("CREATE UNIQUE INDEX IF NOT EXISTS schools_account_name_unique ON schools (account_id, name)"),
+    db().prepare("CREATE INDEX IF NOT EXISTS schools_account_idx ON schools (account_id)"),
+    db().prepare("CREATE INDEX IF NOT EXISTS players_account_idx ON players (account_id)"),
+    db().prepare("CREATE INDEX IF NOT EXISTS match_events_account_idx ON match_events (account_id)"),
     db().prepare(
       `INSERT OR IGNORE INTO player_seasons
-       (id, player_id, school_id, season, rank, initialized_elo)
-       SELECT id || ':' || last_season, id, school_id, last_season, rank, initial_elo FROM players`,
+       (id, account_id, player_id, school_id, season, rank, initialized_elo)
+       SELECT id || ':' || last_season, account_id, id, school_id, last_season, rank, initial_elo FROM players`,
     ),
   ]);
   schemaReady = true;
+}
+
+function accountSchoolId(accountId: string, schoolName: string): string {
+  return `${accountId}:${schoolIdFromName(schoolName)}`;
+}
+
+function metadataKey(accountId: string, key: string): string {
+  return `${accountId}:${key}`;
+}
+
+async function claimLegacyData(accountId: string) {
+
+  const legacy = await db().prepare(
+    "SELECT COUNT(*) AS count FROM schools WHERE account_id IS NULL",
+  ).first<{ count: number }>();
+  if (Number(legacy?.count ?? 0) === 0) return;
+
+  await db().batch([
+    db().prepare("UPDATE schools SET account_id = ? WHERE account_id IS NULL").bind(accountId),
+    db().prepare("UPDATE players SET account_id = ? WHERE account_id IS NULL").bind(accountId),
+    db().prepare("UPDATE player_aliases SET account_id = ? WHERE account_id IS NULL").bind(accountId),
+    db().prepare("UPDATE match_events SET account_id = ? WHERE account_id IS NULL").bind(accountId),
+    db().prepare("UPDATE opponent_positions SET account_id = ? WHERE account_id IS NULL").bind(accountId),
+    db().prepare("UPDATE player_seasons SET account_id = ? WHERE account_id IS NULL").bind(accountId),
+    db().prepare("UPDATE opponent_calibrations SET account_id = ? WHERE account_id IS NULL").bind(accountId),
+  ]);
+
+  for (const key of ["home_school_id", "demo_seeded", "rating_model_version"]) {
+    const legacyValue = await db().prepare("SELECT value FROM model_metadata WHERE key = ?")
+      .bind(key).first<{ value: string }>();
+    if (legacyValue?.value) {
+      await db().prepare("INSERT OR IGNORE INTO model_metadata (key, value) VALUES (?, ?)")
+        .bind(metadataKey(accountId, key), legacyValue.value).run();
+    }
+  }
+}
+
+export async function initializeAccountWorkspace(accountId: string, claimLegacy: boolean) {
+  await ensureSchema();
+  if (claimLegacy) await claimLegacyData(accountId);
 }
 
 function text(row: CsvRow, key: string): string {
@@ -178,63 +277,79 @@ function mapPlayer(row: DbPlayer): PlayerRecord {
   };
 }
 
-async function ensureSchool(name: string): Promise<string> {
+async function ensureSchool(accountId: string, name: string): Promise<string> {
   const schoolName = name.trim();
-  const id = schoolIdFromName(schoolName);
+  const existing = await db().prepare(
+    "SELECT id FROM schools WHERE account_id = ? AND name = ? COLLATE NOCASE LIMIT 1",
+  ).bind(accountId, schoolName).first<{ id: string }>();
+  if (existing?.id) return existing.id;
+  const id = accountSchoolId(accountId, schoolName);
   await db()
-    .prepare("INSERT OR IGNORE INTO schools (id, name) VALUES (?, ?)")
-    .bind(id, schoolName)
+    .prepare("INSERT OR IGNORE INTO schools (id, account_id, name) VALUES (?, ?, ?)")
+    .bind(id, accountId, schoolName)
     .run();
   return id;
 }
 
-async function readHomeSchoolId(): Promise<string | null> {
+async function readHomeSchoolId(accountId: string): Promise<string | null> {
+  const homeKey = metadataKey(accountId, "home_school_id");
   const stored = await db().prepare(
-    "SELECT value FROM model_metadata WHERE key = 'home_school_id'",
-  ).first<{ value: string }>();
+    "SELECT value FROM model_metadata WHERE key = ?",
+  ).bind(homeKey).first<{ value: string }>();
   if (stored?.value) return stored.value;
 
   const rosterLeader = await db().prepare(
     `SELECT school_id AS id, COUNT(*) AS count FROM players
-     GROUP BY school_id ORDER BY count DESC LIMIT 1`,
-  ).first<{ id: string; count: number }>();
+     WHERE account_id = ? GROUP BY school_id ORDER BY count DESC LIMIT 1`,
+  ).bind(accountId).first<{ id: string; count: number }>();
   if (!rosterLeader?.id) return null;
-  if (rosterLeader.id !== "north-valley-high") {
+  const demoHome = await db().prepare(
+    "SELECT id FROM schools WHERE account_id = ? AND name = 'North Valley High' LIMIT 1",
+  ).bind(accountId).first<{ id: string }>();
+  if (demoHome?.id && rosterLeader.id !== demoHome.id) {
     const demoMatches = await db().prepare(
-      "SELECT COUNT(*) AS count FROM match_events WHERE home_school_id = 'north-valley-high'",
-    ).first<{ count: number }>();
+      "SELECT COUNT(*) AS count FROM match_events WHERE account_id = ? AND home_school_id = ?",
+    ).bind(accountId, demoHome.id).first<{ count: number }>();
     if (Number(demoMatches?.count ?? 0) === 0) {
       await db().batch([
-        db().prepare("DELETE FROM player_seasons WHERE school_id = 'north-valley-high'"),
-        db().prepare("DELETE FROM player_aliases WHERE school_id = 'north-valley-high'"),
-        db().prepare("DELETE FROM players WHERE school_id = 'north-valley-high'"),
-        db().prepare("DELETE FROM opponent_positions WHERE home_school_id = 'north-valley-high'"),
-        db().prepare("DELETE FROM opponent_calibrations WHERE home_school_id = 'north-valley-high'"),
-        db().prepare("DELETE FROM schools WHERE id IN ('north-valley-high', 'east-ridge-high')"),
+        db().prepare("DELETE FROM player_seasons WHERE account_id = ? AND school_id = ?").bind(accountId, demoHome.id),
+        db().prepare("DELETE FROM player_aliases WHERE account_id = ? AND school_id = ?").bind(accountId, demoHome.id),
+        db().prepare("DELETE FROM players WHERE account_id = ? AND school_id = ?").bind(accountId, demoHome.id),
+        db().prepare("DELETE FROM opponent_positions WHERE account_id = ? AND home_school_id = ?").bind(accountId, demoHome.id),
+        db().prepare("DELETE FROM opponent_calibrations WHERE account_id = ? AND home_school_id = ?").bind(accountId, demoHome.id),
+        db().prepare("DELETE FROM schools WHERE account_id = ? AND name IN ('North Valley High', 'East Ridge High')").bind(accountId),
       ]);
     }
   }
   await db().prepare(
-    "INSERT INTO model_metadata (key, value) VALUES ('home_school_id', ?)",
-  ).bind(rosterLeader.id).run();
+    "INSERT INTO model_metadata (key, value) VALUES (?, ?)",
+  ).bind(homeKey, rosterLeader.id).run();
   return rosterLeader.id;
 }
 
-async function lockHomeSchool(schoolId: string) {
-  let current = await readHomeSchoolId();
+async function lockHomeSchool(accountId: string, schoolId: string) {
+  let current = await readHomeSchoolId(accountId);
+  const demoKey = metadataKey(accountId, "demo_seeded");
   const demoSeed = await db().prepare(
-    "SELECT value FROM model_metadata WHERE key = 'demo_seeded'",
-  ).first<{ value: string }>();
-  if (current === "north-valley-high" && schoolId !== current && demoSeed?.value === "1") {
+    "SELECT value FROM model_metadata WHERE key = ?",
+  ).bind(demoKey).first<{ value: string }>();
+  const demoHome = await db().prepare(
+    "SELECT id FROM schools WHERE account_id = ? AND name = 'North Valley High' LIMIT 1",
+  ).bind(accountId).first<{ id: string }>();
+  if (demoHome?.id && current === demoHome.id && schoolId !== current && demoSeed?.value === "1") {
     await db().batch([
-      db().prepare("DELETE FROM player_seasons WHERE school_id = 'north-valley-high'"),
-      db().prepare("DELETE FROM player_aliases WHERE school_id = 'north-valley-high'"),
-      db().prepare("DELETE FROM players WHERE school_id = 'north-valley-high'"),
-      db().prepare("DELETE FROM match_events WHERE home_school_id = 'north-valley-high'"),
-      db().prepare("DELETE FROM opponent_positions WHERE home_school_id = 'north-valley-high'"),
-      db().prepare("DELETE FROM opponent_calibrations WHERE home_school_id = 'north-valley-high'"),
-      db().prepare("DELETE FROM schools WHERE id IN ('north-valley-high', 'east-ridge-high')"),
-      db().prepare("DELETE FROM model_metadata WHERE key IN ('home_school_id', 'demo_seeded', 'rating_model_version')"),
+      db().prepare("DELETE FROM player_seasons WHERE account_id = ?").bind(accountId),
+      db().prepare("DELETE FROM player_aliases WHERE account_id = ?").bind(accountId),
+      db().prepare("DELETE FROM players WHERE account_id = ?").bind(accountId),
+      db().prepare("DELETE FROM match_events WHERE account_id = ?").bind(accountId),
+      db().prepare("DELETE FROM opponent_positions WHERE account_id = ?").bind(accountId),
+      db().prepare("DELETE FROM opponent_calibrations WHERE account_id = ?").bind(accountId),
+      db().prepare("DELETE FROM schools WHERE account_id = ?").bind(accountId),
+      db().prepare("DELETE FROM model_metadata WHERE key IN (?, ?, ?)").bind(
+        metadataKey(accountId, "home_school_id"),
+        metadataKey(accountId, "demo_seeded"),
+        metadataKey(accountId, "rating_model_version"),
+      ),
     ]);
     current = null;
   }
@@ -243,23 +358,24 @@ async function lockHomeSchool(schoolId: string) {
   }
   if (!current) {
     await db().prepare(
-      "INSERT INTO model_metadata (key, value) VALUES ('home_school_id', ?)",
-    ).bind(schoolId).run();
+      "INSERT INTO model_metadata (key, value) VALUES (?, ?)",
+    ).bind(metadataKey(accountId, "home_school_id"), schoolId).run();
   }
 }
 
-export async function ensureDemoData() {
+export async function ensureDemoData(account: AccountContext) {
   await ensureSchema();
-  const existing = await db().prepare("SELECT COUNT(*) AS count FROM schools").first<{ count: number }>();
+  const existing = await db().prepare("SELECT COUNT(*) AS count FROM schools WHERE account_id = ?")
+    .bind(account.id).first<{ count: number }>();
   if (Number(existing?.count ?? 0) > 0) return;
 
-  const homeId = "north-valley-high";
-  const opponentId = "east-ridge-high";
+  const homeId = accountSchoolId(account.id, "North Valley High");
+  const opponentId = accountSchoolId(account.id, "East Ridge High");
   const statements = [
-    db().prepare("INSERT INTO schools (id, name) VALUES (?, ?)").bind(homeId, "North Valley High"),
-    db().prepare("INSERT INTO schools (id, name) VALUES (?, ?)").bind(opponentId, "East Ridge High"),
-    db().prepare("INSERT INTO model_metadata (key, value) VALUES ('home_school_id', ?)").bind(homeId),
-    db().prepare("INSERT INTO model_metadata (key, value) VALUES ('demo_seeded', '1')"),
+    db().prepare("INSERT INTO schools (id, account_id, name) VALUES (?, ?, ?)").bind(homeId, account.id, "North Valley High"),
+    db().prepare("INSERT INTO schools (id, account_id, name) VALUES (?, ?, ?)").bind(opponentId, account.id, "East Ridge High"),
+    db().prepare("INSERT INTO model_metadata (key, value) VALUES (?, ?)").bind(metadataKey(account.id, "home_school_id"), homeId),
+    db().prepare("INSERT INTO model_metadata (key, value) VALUES (?, '1')").bind(metadataKey(account.id, "demo_seeded")),
   ];
 
   for (const [gender, prefix] of [["Boys", "B"], ["Girls", "G"]] as const) {
@@ -270,13 +386,13 @@ export async function ensureDemoData() {
       statements.push(
         db().prepare(
           `INSERT INTO players
-           (id, school_id, player_code, display_name, normalized_name, gender, rank,
+           (id, account_id, school_id, player_code, display_name, normalized_name, gender, rank,
             initial_elo, current_elo, first_season, last_season, active)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 2026, 2026, 1)`,
-        ).bind(id, homeId, code, `Player ${code}`, normalizeName(`Player ${code}`), gender, rank, rating, rating),
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 2026, 2026, 1)`,
+        ).bind(id, account.id, homeId, code, `Player ${code}`, normalizeName(`Player ${code}`), gender, rank, rating, rating),
         db().prepare(
-          "INSERT INTO player_aliases (id, school_id, alias_code, player_id) VALUES (?, ?, ?, ?)",
-        ).bind(`${homeId}:${code.toLowerCase()}`, homeId, code.toLowerCase(), id),
+          "INSERT INTO player_aliases (id, account_id, school_id, alias_code, player_id) VALUES (?, ?, ?, ?, ?)",
+        ).bind(`${homeId}:${code.toLowerCase()}`, account.id, homeId, code.toLowerCase(), id),
       );
     }
   }
@@ -289,19 +405,20 @@ export async function ensureDemoData() {
     statements.push(
       db().prepare(
         `INSERT INTO opponent_positions
-         (id, home_school_id, opponent_school_id, position, current_elo, total_weight, matches_used)
-         VALUES (?, ?, ?, ?, ?, 6, 3)`,
-      ).bind(`${homeId}|${opponentId}|${position}`, homeId, opponentId, position, rating),
+         (id, account_id, home_school_id, opponent_school_id, position, current_elo, total_weight, matches_used)
+         VALUES (?, ?, ?, ?, ?, ?, 6, 3)`,
+      ).bind(`${homeId}|${opponentId}|${position}`, account.id, homeId, opponentId, position, rating),
     );
   }
   await db().batch(statements);
 }
 
-export async function getDashboard(opponentSchoolId?: string) {
-  await ensureDemoData();
-  await ensureCurrentRatingModel();
-  const homeSchoolId = await readHomeSchoolId();
-  const schoolRows = await db().prepare("SELECT id, name FROM schools ORDER BY name").all<{ id: string; name: string }>();
+export async function getDashboard(account: AccountContext, opponentSchoolId?: string) {
+  await ensureDemoData(account);
+  await ensureCurrentRatingModel(account.id);
+  const homeSchoolId = await readHomeSchoolId(account.id);
+  const schoolRows = await db().prepare("SELECT id, name FROM schools WHERE account_id = ? ORDER BY name")
+    .bind(account.id).all<{ id: string; name: string }>();
   const schools = schoolRows.results;
   const selectedHome = schools.find((school) => school.id === homeSchoolId) ?? schools[0];
   const selectedOpponent = schools.find((school) => school.id === opponentSchoolId && school.id !== selectedHome.id)
@@ -309,8 +426,8 @@ export async function getDashboard(opponentSchoolId?: string) {
     ?? null;
 
   const playerRows = await db().prepare(
-    "SELECT * FROM players WHERE school_id = ? ORDER BY gender, rank, display_name",
-  ).bind(selectedHome.id).all<DbPlayer>();
+    "SELECT * FROM players WHERE account_id = ? AND school_id = ? ORDER BY gender, rank, display_name",
+  ).bind(account.id, selectedHome.id).all<DbPlayer>();
 
   let positions: PositionRating[] = [];
   let historicalFit: {
@@ -323,13 +440,13 @@ export async function getDashboard(opponentSchoolId?: string) {
     const positionRows = await db().prepare(
       `SELECT position, current_elo, total_weight, matches_used
        FROM opponent_positions
-       WHERE home_school_id = ? AND opponent_school_id = ?`,
-    ).bind(selectedHome.id, selectedOpponent.id).all<DbPosition>();
+       WHERE account_id = ? AND home_school_id = ? AND opponent_school_id = ?`,
+    ).bind(account.id, selectedHome.id, selectedOpponent.id).all<DbPosition>();
     const calibration = await db().prepare(
       `SELECT elo_offset, actual_wins, projected_wins, event_count, meet_count
        FROM opponent_calibrations
-       WHERE home_school_id = ? AND opponent_school_id = ?`,
-    ).bind(selectedHome.id, selectedOpponent.id).first<DbCalibration>();
+       WHERE account_id = ? AND home_school_id = ? AND opponent_school_id = ?`,
+    ).bind(account.id, selectedHome.id, selectedOpponent.id).first<DbCalibration>();
     const offset = Number(calibration?.elo_offset ?? 0);
     const byEvent = new Map(positionRows.results.map((row) => [row.position, row]));
     positions = EVENT_ORDER.map((position) => {
@@ -353,12 +470,12 @@ export async function getDashboard(opponentSchoolId?: string) {
 
   const yearRows = await db().prepare(
     `SELECT season_year AS year, MAX(season_weight) AS weight
-     FROM match_events WHERE home_school_id = ? AND season_weight > 0
+     FROM match_events WHERE account_id = ? AND home_school_id = ? AND season_weight > 0
      GROUP BY season_year ORDER BY season_year`,
-  ).bind(selectedHome.id).all<{ year: number; weight: number }>();
+  ).bind(account.id, selectedHome.id).all<{ year: number; weight: number }>();
   const matchCount = await db().prepare(
-    "SELECT COUNT(*) AS count FROM match_events WHERE home_school_id = ?",
-  ).bind(selectedHome.id).first<{ count: number }>();
+    "SELECT COUNT(*) AS count FROM match_events WHERE account_id = ? AND home_school_id = ?",
+  ).bind(account.id, selectedHome.id).first<{ count: number }>();
 
   const players = playerRows.results.map(mapPlayer);
   return {
@@ -372,28 +489,28 @@ export async function getDashboard(opponentSchoolId?: string) {
     matchCount: Number(matchCount?.count ?? 0),
     returningPlayers: players.filter((player) => player.firstSeason < player.lastSeason).length,
     historicalFit,
-    demo: selectedHome.id === "north-valley-high",
+    demo: selectedHome.name === "North Valley High",
   };
 }
 
-async function findPlayer(schoolId: string, code: string, name?: string) {
+async function findPlayer(accountId: string, schoolId: string, code: string, name?: string) {
   const normalizedCode = code.trim().toLowerCase();
   const byAlias = normalizedCode
     ? await db().prepare(
         `SELECT p.* FROM player_aliases a
          JOIN players p ON p.id = a.player_id
-         WHERE a.school_id = ? AND a.alias_code = ?`,
-      ).bind(schoolId, normalizedCode).first<DbPlayer>()
+         WHERE a.account_id = ? AND a.school_id = ? AND a.alias_code = ?`,
+      ).bind(accountId, schoolId, normalizedCode).first<DbPlayer>()
     : null;
   if (byAlias) return byAlias;
   const normalized = normalizeName(name ?? "");
   if (!normalized) return null;
   return db().prepare(
-    "SELECT * FROM players WHERE school_id = ? AND normalized_name = ? LIMIT 1",
-  ).bind(schoolId, normalized).first<DbPlayer>();
+    "SELECT * FROM players WHERE account_id = ? AND school_id = ? AND normalized_name = ? LIMIT 1",
+  ).bind(accountId, schoolId, normalized).first<DbPlayer>();
 }
 
-export async function importRosters(rows: CsvRow[]) {
+export async function importRosters(account: AccountContext, rows: CsvRow[]) {
   await ensureSchema();
   if (!rows.length) throw new Error("The roster CSV contains no data rows.");
   const prepared = [] as Array<{
@@ -424,7 +541,7 @@ export async function importRosters(rows: CsvRow[]) {
     }
     prepared.push({
       schoolName,
-      schoolId: schoolIdFromName(schoolName),
+      schoolId: "",
       season,
       code,
       name,
@@ -435,12 +552,13 @@ export async function importRosters(rows: CsvRow[]) {
     });
   }
 
-  const requestedSchools = [...new Set(prepared.map((row) => row.schoolId))];
-  if (requestedSchools.length !== 1) {
+  const requestedSchoolNames = [...new Set(prepared.map((row) => row.schoolName.trim().toLowerCase()))];
+  if (requestedSchoolNames.length !== 1) {
     throw new Error("A roster file must contain exactly one home school.");
   }
-  await lockHomeSchool(requestedSchools[0]);
-  await ensureSchool(prepared[0].schoolName);
+  const importedSchoolId = await ensureSchool(account.id, prepared[0].schoolName);
+  for (const row of prepared) row.schoolId = importedSchoolId;
+  await lockHomeSchool(account.id, importedSchoolId);
 
   let created = 0;
   let continued = 0;
@@ -449,11 +567,12 @@ export async function importRosters(rows: CsvRow[]) {
     const schoolRows = prepared.filter((row) => row.schoolId === schoolId);
     const latestImportSeason = Math.max(...schoolRows.map((row) => row.season));
     const existingLatest = await db().prepare(
-      "SELECT MAX(last_season) AS season FROM players WHERE school_id = ?",
-    ).bind(schoolId).first<{ season: number | null }>();
+      "SELECT MAX(last_season) AS season FROM players WHERE account_id = ? AND school_id = ?",
+    ).bind(account.id, schoolId).first<{ season: number | null }>();
     const changesActiveRoster = latestImportSeason >= Number(existingLatest?.season ?? 0);
     if (changesActiveRoster) {
-      await db().prepare("UPDATE players SET active = 0 WHERE school_id = ?").bind(schoolId).run();
+      await db().prepare("UPDATE players SET active = 0 WHERE account_id = ? AND school_id = ?")
+        .bind(account.id, schoolId).run();
     }
 
     const groupSizes = new Map<string, number>();
@@ -463,7 +582,7 @@ export async function importRosters(rows: CsvRow[]) {
     }
 
     for (const row of schoolRows.sort((a, b) => a.season - b.season || a.rank - b.rank)) {
-      const existing = await findPlayer(schoolId, row.code);
+      const existing = await findPlayer(account.id, schoolId, row.code);
       const isActive = changesActiveRoster && row.season === latestImportSeason
         ? Number(row.active)
         : Number(existing?.active ?? 0);
@@ -496,14 +615,14 @@ export async function importRosters(rows: CsvRow[]) {
         ).run();
         await db().batch([
           db().prepare(
-            "INSERT OR IGNORE INTO player_aliases (id, school_id, alias_code, player_id) VALUES (?, ?, ?, ?)",
-          ).bind(`${schoolId}:${row.code.toLowerCase()}`, schoolId, row.code.toLowerCase(), existing.id),
+            "INSERT OR IGNORE INTO player_aliases (id, account_id, school_id, alias_code, player_id) VALUES (?, ?, ?, ?, ?)",
+          ).bind(`${schoolId}:${row.code.toLowerCase()}`, account.id, schoolId, row.code.toLowerCase(), existing.id),
           db().prepare(
-            `INSERT INTO player_seasons (id, player_id, school_id, season, rank, initialized_elo)
-             VALUES (?, ?, ?, ?, ?, ?)
+            `INSERT INTO player_seasons (id, account_id, player_id, school_id, season, rank, initialized_elo)
+             VALUES (?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(player_id, season) DO UPDATE SET
                rank = excluded.rank, initialized_elo = excluded.initialized_elo`,
-          ).bind(`${existing.id}:${row.season}`, existing.id, schoolId, row.season, row.rank, initializedElo),
+          ).bind(`${existing.id}:${row.season}`, account.id, existing.id, schoolId, row.season, row.rank, initializedElo),
         ]);
       } else {
         created += 1;
@@ -511,17 +630,17 @@ export async function importRosters(rows: CsvRow[]) {
         await db().batch([
           db().prepare(
             `INSERT INTO players
-             (id, school_id, player_code, display_name, normalized_name, gender, rank,
+             (id, account_id, school_id, player_code, display_name, normalized_name, gender, rank,
               initial_elo, current_elo, first_season, last_season, active)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          ).bind(playerId, schoolId, row.code, row.name, normalizeName(row.name), row.gender, row.rank, initializedElo, initializedElo, row.season, row.season, isActive),
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          ).bind(playerId, account.id, schoolId, row.code, row.name, normalizeName(row.name), row.gender, row.rank, initializedElo, initializedElo, row.season, row.season, isActive),
           db().prepare(
-            "INSERT INTO player_aliases (id, school_id, alias_code, player_id) VALUES (?, ?, ?, ?)",
-          ).bind(`${schoolId}:${row.code.toLowerCase()}`, schoolId, row.code.toLowerCase(), playerId),
+            "INSERT INTO player_aliases (id, account_id, school_id, alias_code, player_id) VALUES (?, ?, ?, ?, ?)",
+          ).bind(`${schoolId}:${row.code.toLowerCase()}`, account.id, schoolId, row.code.toLowerCase(), playerId),
           db().prepare(
-            `INSERT INTO player_seasons (id, player_id, school_id, season, rank, initialized_elo)
-             VALUES (?, ?, ?, ?, ?, ?)`,
-          ).bind(`${playerId}:${row.season}`, playerId, schoolId, row.season, row.rank, initializedElo),
+            `INSERT INTO player_seasons (id, account_id, player_id, school_id, season, rank, initialized_elo)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          ).bind(`${playerId}:${row.season}`, account.id, playerId, schoolId, row.season, row.rank, initializedElo),
         ]);
       }
     }
@@ -591,9 +710,9 @@ function parseGames(row: CsvRow): Array<[number, number]> {
   return games;
 }
 
-async function parseMatchRows(rows: CsvRow[], createOpponentSchools: boolean) {
+async function parseMatchRows(account: AccountContext, rows: CsvRow[], createOpponentSchools: boolean) {
   if (!rows.length) throw new Error("The match data contains no event rows.");
-  const lockedHomeSchoolId = await readHomeSchoolId();
+  const lockedHomeSchoolId = await readHomeSchoolId(account.id);
   if (!lockedHomeSchoolId) throw new Error("Import the home-school roster before importing matches.");
   const parsed: ParsedMatch[] = [];
   for (const [index, row] of rows.entries()) {
@@ -612,20 +731,26 @@ async function parseMatchRows(rows: CsvRow[], createOpponentSchools: boolean) {
     if (!homeName || !opponentName || !player1 || (needsPair && !player2Text)) {
       throw new Error(`Match row ${index + 2} is missing a required value.`);
     }
-    const homeSchoolId = schoolIdFromName(homeName);
-    if (homeSchoolId !== lockedHomeSchoolId) {
-      throw new Error(`Match row ${index + 2}: home_school must match this site's locked home school.`);
+    const homeSchoolId = (await db().prepare(
+      "SELECT id FROM schools WHERE account_id = ? AND name = ? COLLATE NOCASE LIMIT 1",
+    ).bind(account.id, homeName).first<{ id: string }>())?.id;
+    if (!homeSchoolId) {
+      throw new Error(`Match row ${index + 2}: home_school is not in this account.`);
     }
-    const requestedOpponentId = schoolIdFromName(opponentName);
+    if (homeSchoolId !== lockedHomeSchoolId) {
+      throw new Error(`Match row ${index + 2}: home_school must match this account's locked home school.`);
+    }
     const opponentSchoolId = createOpponentSchools
-      ? await ensureSchool(opponentName)
-      : (await db().prepare("SELECT id FROM schools WHERE id = ?").bind(requestedOpponentId).first<{ id: string }>())?.id;
+      ? await ensureSchool(account.id, opponentName)
+      : (await db().prepare(
+          "SELECT id FROM schools WHERE account_id = ? AND name = ? COLLATE NOCASE LIMIT 1",
+        ).bind(account.id, opponentName).first<{ id: string }>())?.id;
     if (!opponentSchoolId) {
       throw new Error(`Match row ${index + 2}: the selected opponent is not in the database.`);
     }
     if (homeSchoolId === opponentSchoolId) throw new Error(`Match row ${index + 2}: schools must be different.`);
-    const firstPlayer = await findPlayer(homeSchoolId, player1);
-    const secondPlayer = player2Text ? await findPlayer(homeSchoolId, player2Text) : null;
+    const firstPlayer = await findPlayer(account.id, homeSchoolId, player1);
+    const secondPlayer = player2Text ? await findPlayer(account.id, homeSchoolId, player2Text) : null;
     if (!firstPlayer || (needsPair && !secondPlayer)) {
       throw new Error(`Match row ${index + 2}: import the home roster before its matches.`);
     }
@@ -648,7 +773,7 @@ async function parseMatchRows(rows: CsvRow[], createOpponentSchools: boolean) {
   return parsed;
 }
 
-async function validateCompleteMeet(parsed: ParsedMatch[]) {
+async function validateCompleteMeet(account: AccountContext, parsed: ParsedMatch[]) {
   if (parsed.length !== EVENT_ORDER.length) {
     throw new Error(`A complete meet requires exactly ${EVENT_ORDER.length} event results.`);
   }
@@ -665,8 +790,8 @@ async function validateCompleteMeet(parsed: ParsedMatch[]) {
 
   const usedPlayers = new Set<string>();
   for (const match of parsed) {
-    const firstPlayer = await findPlayer(match.homeSchoolId, match.player1);
-    const secondPlayer = match.player2 ? await findPlayer(match.homeSchoolId, match.player2) : null;
+    const firstPlayer = await findPlayer(account.id, match.homeSchoolId, match.player1);
+    const secondPlayer = match.player2 ? await findPlayer(account.id, match.homeSchoolId, match.player2) : null;
     if (!firstPlayer || (match.player2 && !secondPlayer)) throw new Error(`Could not resolve the players entered for ${match.position}.`);
     const pairEvent = match.position.startsWith("BD") || match.position.startsWith("GD") || match.position.startsWith("XD");
     if (!pairEvent && secondPlayer) throw new Error(`${match.position} is a singles event and must have only one player.`);
@@ -682,20 +807,20 @@ async function validateCompleteMeet(parsed: ParsedMatch[]) {
   }
 
   const existing = await db().prepare(
-    `SELECT COUNT(*) AS count FROM match_events
-     WHERE home_school_id = ? AND opponent_school_id = ? AND match_date = ?`,
-  ).bind(first.homeSchoolId, first.opponentSchoolId, first.date).first<{ count: number }>();
+     `SELECT COUNT(*) AS count FROM match_events
+     WHERE account_id = ? AND home_school_id = ? AND opponent_school_id = ? AND match_date = ?`,
+  ).bind(account.id, first.homeSchoolId, first.opponentSchoolId, first.date).first<{ count: number }>();
   if (Number(existing?.count ?? 0) > 0) {
     throw new Error("Results for this opponent and date already exist. Change the date or use a different opponent.");
   }
 }
 
-async function ratingSnapshot(parsed: ParsedMatch[]): Promise<RatingSnapshot> {
+async function ratingSnapshot(account: AccountContext, parsed: ParsedMatch[]): Promise<RatingSnapshot> {
   const first = parsed[0];
   const uniqueCodes = [...new Set(parsed.flatMap((match) => [match.player1, match.player2].filter(Boolean) as string[]))];
   const playerMap = new Map<string, { code: string; name: string; elo: number }>();
   for (const code of uniqueCodes) {
-    const player = await findPlayer(first.homeSchoolId, code);
+    const player = await findPlayer(account.id, first.homeSchoolId, code);
     if (!player) throw new Error(`Could not find player ${code}.`);
     playerMap.set(player.player_code.toLowerCase(), {
       code: player.player_code,
@@ -705,13 +830,13 @@ async function ratingSnapshot(parsed: ParsedMatch[]): Promise<RatingSnapshot> {
   }
 
   const rows = await db().prepare(
-    `SELECT position, current_elo FROM opponent_positions
-     WHERE home_school_id = ? AND opponent_school_id = ?`,
-  ).bind(first.homeSchoolId, first.opponentSchoolId).all<{ position: EventCode; current_elo: number }>();
+     `SELECT position, current_elo FROM opponent_positions
+     WHERE account_id = ? AND home_school_id = ? AND opponent_school_id = ?`,
+  ).bind(account.id, first.homeSchoolId, first.opponentSchoolId).all<{ position: EventCode; current_elo: number }>();
   const calibration = await db().prepare(
-    `SELECT elo_offset FROM opponent_calibrations
-     WHERE home_school_id = ? AND opponent_school_id = ?`,
-  ).bind(first.homeSchoolId, first.opponentSchoolId).first<{ elo_offset: number }>();
+     `SELECT elo_offset FROM opponent_calibrations
+     WHERE account_id = ? AND home_school_id = ? AND opponent_school_id = ?`,
+  ).bind(account.id, first.homeSchoolId, first.opponentSchoolId).first<{ elo_offset: number }>();
   const offset = Number(calibration?.elo_offset ?? 0);
   const raw = new Map(rows.results.map((row) => [row.position, Number(row.current_elo)]));
   return {
@@ -724,14 +849,15 @@ async function ratingSnapshot(parsed: ParsedMatch[]): Promise<RatingSnapshot> {
 }
 
 async function receiptFromSnapshots(
+  account: AccountContext,
   parsed: ParsedMatch[],
   before: RatingSnapshot,
   after: RatingSnapshot,
   exact: boolean,
 ): Promise<MeetRatingReceipt> {
   const first = parsed[0];
-  const schoolRows = await db().prepare("SELECT id, name FROM schools WHERE id IN (?, ?)")
-    .bind(first.homeSchoolId, first.opponentSchoolId).all<{ id: string; name: string }>();
+  const schoolRows = await db().prepare("SELECT id, name FROM schools WHERE account_id = ? AND id IN (?, ?)")
+    .bind(account.id, first.homeSchoolId, first.opponentSchoolId).all<{ id: string; name: string }>();
   const names = new Map(schoolRows.results.map((row) => [row.id, row.name]));
   const playerOrder = [...new Set(parsed.flatMap((match) => [match.player1, match.player2].filter(Boolean) as string[]))];
   return {
@@ -761,27 +887,27 @@ async function receiptFromSnapshots(
   };
 }
 
-async function estimatedMeetReceipt(parsed: ParsedMatch[]) {
-  const before = await ratingSnapshot(parsed);
+async function estimatedMeetReceipt(account: AccountContext, parsed: ParsedMatch[]) {
+  const before = await ratingSnapshot(account, parsed);
   const after: RatingSnapshot = {
     players: new Map([...before.players].map(([code, player]) => [code, { ...player }])),
     positions: new Map(before.positions),
   };
   const first = parsed[0];
   const yearRows = await db().prepare(
-    "SELECT DISTINCT season_year AS year FROM match_events WHERE home_school_id = ? ORDER BY season_year",
-  ).bind(first.homeSchoolId).all<{ year: number }>();
+    "SELECT DISTINCT season_year AS year FROM match_events WHERE account_id = ? AND home_school_id = ? ORDER BY season_year",
+  ).bind(account.id, first.homeSchoolId).all<{ year: number }>();
   const activeYears = [...new Set([...yearRows.results.map((row) => Number(row.year)), first.year])]
     .sort((a, b) => a - b).slice(-POSITION_SEASON_WINDOW);
   const yearWeight = Math.max(1, activeYears.indexOf(first.year) + 1);
   const positionRows = await db().prepare(
-    `SELECT position, current_elo, total_weight FROM opponent_positions
-     WHERE home_school_id = ? AND opponent_school_id = ?`,
-  ).bind(first.homeSchoolId, first.opponentSchoolId).all<{ position: EventCode; current_elo: number; total_weight: number }>();
+     `SELECT position, current_elo, total_weight FROM opponent_positions
+     WHERE account_id = ? AND home_school_id = ? AND opponent_school_id = ?`,
+  ).bind(account.id, first.homeSchoolId, first.opponentSchoolId).all<{ position: EventCode; current_elo: number; total_weight: number }>();
   const calibration = await db().prepare(
-    `SELECT elo_offset FROM opponent_calibrations
-     WHERE home_school_id = ? AND opponent_school_id = ?`,
-  ).bind(first.homeSchoolId, first.opponentSchoolId).first<{ elo_offset: number }>();
+     `SELECT elo_offset FROM opponent_calibrations
+     WHERE account_id = ? AND home_school_id = ? AND opponent_school_id = ?`,
+  ).bind(account.id, first.homeSchoolId, first.opponentSchoolId).first<{ elo_offset: number }>();
   const offset = Number(calibration?.elo_offset ?? 0);
   const positionState = new Map(positionRows.results.map((row) => [row.position, {
     elo: Number(row.current_elo),
@@ -808,34 +934,34 @@ async function estimatedMeetReceipt(parsed: ParsedMatch[]) {
       : observation;
     after.positions.set(match.position, nextRaw + offset);
   }
-  return receiptFromSnapshots(parsed, before, after, false);
+  return receiptFromSnapshots(account, parsed, before, after, false);
 }
 
-export async function previewMeet(rows: CsvRow[]) {
+export async function previewMeet(account: AccountContext, rows: CsvRow[]) {
   await ensureSchema();
-  await ensureCurrentRatingModel();
-  const parsed = await parseMatchRows(rows, false);
-  await validateCompleteMeet(parsed);
-  return estimatedMeetReceipt(parsed);
+  await ensureCurrentRatingModel(account.id);
+  const parsed = await parseMatchRows(account, rows, false);
+  await validateCompleteMeet(account, parsed);
+  return estimatedMeetReceipt(account, parsed);
 }
 
-export async function confirmMeet(rows: CsvRow[]) {
+export async function confirmMeet(account: AccountContext, rows: CsvRow[]) {
   await ensureSchema();
-  await ensureCurrentRatingModel();
-  const parsed = await parseMatchRows(rows, false);
-  await validateCompleteMeet(parsed);
-  const before = await ratingSnapshot(parsed);
-  const imported = await importMatches(rows);
+  await ensureCurrentRatingModel(account.id);
+  const parsed = await parseMatchRows(account, rows, false);
+  await validateCompleteMeet(account, parsed);
+  const before = await ratingSnapshot(account, parsed);
+  const imported = await importMatches(account, rows);
   if (imported.inserted !== EVENT_ORDER.length) {
     throw new Error("The complete meet could not be saved. No duplicate events are allowed.");
   }
-  const after = await ratingSnapshot(parsed);
-  return { ...imported, receipt: await receiptFromSnapshots(parsed, before, after, true) };
+  const after = await ratingSnapshot(account, parsed);
+  return { ...imported, receipt: await receiptFromSnapshots(account, parsed, before, after, true) };
 }
 
-export async function importMatches(rows: CsvRow[]) {
+export async function importMatches(account: AccountContext, rows: CsvRow[]) {
   await ensureSchema();
-  const parsed = await parseMatchRows(rows, true);
+  const parsed = await parseMatchRows(account, rows, true);
 
   let inserted = 0;
   let duplicates = 0;
@@ -843,11 +969,12 @@ export async function importMatches(rows: CsvRow[]) {
     const id = `${match.homeSchoolId}|${match.opponentSchoolId}|${match.date}|${match.position}`;
     const result = await db().prepare(
       `INSERT OR IGNORE INTO match_events
-       (id, match_date, season_year, season_weight, home_school_id, opponent_school_id,
+       (id, account_id, match_date, season_year, season_weight, home_school_id, opponent_school_id,
         position, home_player_1_code, home_player_2_code, scores_json, point_differential, home_won)
-       VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).bind(
       id,
+      account.id,
       match.date,
       match.year,
       match.homeSchoolId,
@@ -863,21 +990,21 @@ export async function importMatches(rows: CsvRow[]) {
     else duplicates += 1;
   }
 
-  await recomputeRatings();
+  await recomputeRatings(account.id);
   return { inserted, duplicates, yearsReweighted: true };
 }
 
-async function recomputeRatings() {
+async function recomputeRatings(accountId: string) {
   await db().batch([
-    db().prepare("UPDATE players SET current_elo = initial_elo"),
-    db().prepare("DELETE FROM opponent_positions"),
-    db().prepare("DELETE FROM opponent_calibrations"),
+    db().prepare("UPDATE players SET current_elo = initial_elo WHERE account_id = ?").bind(accountId),
+    db().prepare("DELETE FROM opponent_positions WHERE account_id = ?").bind(accountId),
+    db().prepare("DELETE FROM opponent_calibrations WHERE account_id = ?").bind(accountId),
   ]);
 
   const events = await db().prepare(
-    `SELECT * FROM match_events
+    `SELECT * FROM match_events WHERE account_id = ?
      ORDER BY match_date, home_school_id, opponent_school_id, position`,
-  ).all<{
+  ).bind(accountId).all<{
     id: string;
     match_date: string;
     season_year: number;
@@ -893,8 +1020,8 @@ async function recomputeRatings() {
 
   const playerSeasonRows = await db().prepare(
     `SELECT player_id, school_id, season, initialized_elo
-     FROM player_seasons ORDER BY school_id, season, player_id`,
-  ).all<{ player_id: string; school_id: string; season: number; initialized_elo: number }>();
+     FROM player_seasons WHERE account_id = ? ORDER BY school_id, season, player_id`,
+  ).bind(accountId).all<{ player_id: string; school_id: string; season: number; initialized_elo: number }>();
   const floorsBySchool = new Map<string, typeof playerSeasonRows.results>();
   for (const row of playerSeasonRows.results) {
     const rows = floorsBySchool.get(row.school_id) ?? [];
@@ -932,9 +1059,9 @@ async function recomputeRatings() {
     const yearWeight = activeYearIndex >= 0 ? activeYearIndex + 1 : 0;
     event.season_weight = yearWeight;
     await db().prepare("UPDATE match_events SET season_weight = ? WHERE id = ?").bind(yearWeight, event.id).run();
-    const player1 = await findPlayer(event.home_school_id, event.home_player_1_code);
+    const player1 = await findPlayer(accountId, event.home_school_id, event.home_player_1_code);
     const player2 = event.home_player_2_code
-      ? await findPlayer(event.home_school_id, event.home_player_2_code)
+      ? await findPlayer(accountId, event.home_school_id, event.home_player_2_code)
       : null;
     if (!player1 || (event.home_player_2_code && !player2)) continue;
 
@@ -969,13 +1096,13 @@ async function recomputeRatings() {
     if (yearWeight > 0) {
       await db().prepare(
         `INSERT INTO opponent_positions
-         (id, home_school_id, opponent_school_id, position, current_elo, total_weight, matches_used)
-         VALUES (?, ?, ?, ?, ?, ?, 1)
+         (id, account_id, home_school_id, opponent_school_id, position, current_elo, total_weight, matches_used)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 1)
          ON CONFLICT(id) DO UPDATE SET
            current_elo = excluded.current_elo,
            total_weight = excluded.total_weight,
            matches_used = opponent_positions.matches_used + 1`,
-      ).bind(positionId, event.home_school_id, event.opponent_school_id, event.position, newOpponentElo, newWeight).run();
+      ).bind(positionId, accountId, event.home_school_id, event.opponent_school_id, event.position, newOpponentElo, newWeight).run();
     }
   }
 
@@ -986,14 +1113,14 @@ async function recomputeRatings() {
 
 
   const finalPlayers = await db().prepare(
-    "SELECT school_id, player_code, current_elo FROM players",
-  ).all<{ school_id: string; player_code: string; current_elo: number }>();
+    "SELECT school_id, player_code, current_elo FROM players WHERE account_id = ?",
+  ).bind(accountId).all<{ school_id: string; player_code: string; current_elo: number }>();
   const finalPlayerElo = new Map(
     finalPlayers.results.map((row) => [`${row.school_id}|${row.player_code.toLowerCase()}`, Number(row.current_elo)]),
   );
   const finalPositions = await db().prepare(
-    "SELECT home_school_id, opponent_school_id, position, current_elo FROM opponent_positions",
-  ).all<{ home_school_id: string; opponent_school_id: string; position: string; current_elo: number }>();
+    "SELECT home_school_id, opponent_school_id, position, current_elo FROM opponent_positions WHERE account_id = ?",
+  ).bind(accountId).all<{ home_school_id: string; opponent_school_id: string; position: string; current_elo: number }>();
   const finalPositionElo = new Map(
     finalPositions.results.map((row) => [
       `${row.home_school_id}|${row.opponent_school_id}|${row.position}`,
@@ -1037,10 +1164,11 @@ async function recomputeRatings() {
     );
     await db().prepare(
       `INSERT INTO opponent_calibrations
-       (id, home_school_id, opponent_school_id, elo_offset, actual_wins, projected_wins, event_count, meet_count)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, account_id, home_school_id, opponent_school_id, elo_offset, actual_wins, projected_wins, event_count, meet_count)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).bind(
       id,
+      accountId,
       group.homeSchoolId,
       group.opponentSchoolId,
       offset,
@@ -1052,31 +1180,31 @@ async function recomputeRatings() {
   }
 
   await db().prepare(
-    `INSERT INTO model_metadata (key, value) VALUES ('rating_model_version', ?)
+    `INSERT INTO model_metadata (key, value) VALUES (?, ?)
      ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-  ).bind(RATING_MODEL_VERSION).run();
+  ).bind(metadataKey(accountId, "rating_model_version"), RATING_MODEL_VERSION).run();
 }
 
-let ratingModelReady = false;
+const ratingModelReady = new Set<string>();
 
-async function ensureCurrentRatingModel() {
-  if (ratingModelReady) return;
+async function ensureCurrentRatingModel(accountId: string) {
+  if (ratingModelReady.has(accountId)) return;
   const stored = await db().prepare(
-    "SELECT value FROM model_metadata WHERE key = 'rating_model_version'",
-  ).first<{ value: string }>();
+    "SELECT value FROM model_metadata WHERE key = ?",
+  ).bind(metadataKey(accountId, "rating_model_version")).first<{ value: string }>();
 
   if (stored?.value !== RATING_MODEL_VERSION) {
     const matchCount = await db().prepare(
-      "SELECT COUNT(*) AS count FROM match_events",
-    ).first<{ count: number }>();
+      "SELECT COUNT(*) AS count FROM match_events WHERE account_id = ?",
+    ).bind(accountId).first<{ count: number }>();
     if (Number(matchCount?.count ?? 0) > 0) {
-      await recomputeRatings();
+      await recomputeRatings(accountId);
     } else {
       await db().prepare(
-        `INSERT INTO model_metadata (key, value) VALUES ('rating_model_version', ?)
+        `INSERT INTO model_metadata (key, value) VALUES (?, ?)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-      ).bind(RATING_MODEL_VERSION).run();
+      ).bind(metadataKey(accountId, "rating_model_version"), RATING_MODEL_VERSION).run();
     }
   }
-  ratingModelReady = true;
+  ratingModelReady.add(accountId);
 }

@@ -8,14 +8,46 @@ import {
   uniqueIndex,
 } from "drizzle-orm/sqlite-core";
 
+export const accounts = sqliteTable("accounts", {
+  id: text("id").primaryKey(),
+  username: text("username").notNull(),
+  normalizedUsername: text("normalized_username").notNull(),
+  passwordHash: text("password_hash").notNull(),
+  passwordSalt: text("password_salt").notNull(),
+  passwordIterations: integer("password_iterations").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [uniqueIndex("accounts_username_unique").on(table.normalizedUsername)]);
+
+export const sessions = sqliteTable("sessions", {
+  id: text("id").primaryKey(),
+  accountId: text("account_id").notNull(),
+  expiresAt: text("expires_at").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("sessions_account_idx").on(table.accountId),
+  index("sessions_expires_idx").on(table.expiresAt),
+]);
+
+export const loginAttempts = sqliteTable("login_attempts", {
+  normalizedUsername: text("normalized_username").primaryKey(),
+  failedCount: integer("failed_count").notNull().default(0),
+  windowStartedAt: text("window_started_at").notNull(),
+  lockedUntil: text("locked_until"),
+});
+
 export const schools = sqliteTable("schools", {
   id: text("id").primaryKey(),
+  accountId: text("account_id"),
   name: text("name").notNull(),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-}, (table) => [uniqueIndex("schools_name_unique").on(table.name)]);
+}, (table) => [
+  uniqueIndex("schools_account_name_unique").on(table.accountId, table.name),
+  index("schools_account_idx").on(table.accountId),
+]);
 
 export const players = sqliteTable("players", {
   id: text("id").primaryKey(),
+  accountId: text("account_id"),
   schoolId: text("school_id").notNull(),
   playerCode: text("player_code").notNull(),
   displayName: text("display_name").notNull(),
@@ -34,6 +66,7 @@ export const players = sqliteTable("players", {
 
 export const playerAliases = sqliteTable("player_aliases", {
   id: text("id").primaryKey(),
+  accountId: text("account_id"),
   schoolId: text("school_id").notNull(),
   aliasCode: text("alias_code").notNull(),
   playerId: text("player_id").notNull(),
@@ -44,6 +77,7 @@ export const playerAliases = sqliteTable("player_aliases", {
 
 export const matchEvents = sqliteTable("match_events", {
   id: text("id").primaryKey(),
+  accountId: text("account_id"),
   matchDate: text("match_date").notNull(),
   seasonYear: integer("season_year").notNull(),
   seasonWeight: integer("season_weight").notNull().default(1),
@@ -68,6 +102,7 @@ export const matchEvents = sqliteTable("match_events", {
 
 export const opponentPositions = sqliteTable("opponent_positions", {
   id: text("id").primaryKey(),
+  accountId: text("account_id"),
   homeSchoolId: text("home_school_id").notNull(),
   opponentSchoolId: text("opponent_school_id").notNull(),
   position: text("position").notNull(),
@@ -89,6 +124,7 @@ export const modelMetadata = sqliteTable("model_metadata", {
 
 export const playerSeasons = sqliteTable("player_seasons", {
   id: text("id").primaryKey(),
+  accountId: text("account_id"),
   playerId: text("player_id").notNull(),
   schoolId: text("school_id").notNull(),
   season: integer("season").notNull(),
@@ -101,6 +137,7 @@ export const playerSeasons = sqliteTable("player_seasons", {
 
 export const opponentCalibrations = sqliteTable("opponent_calibrations", {
   id: text("id").primaryKey(),
+  accountId: text("account_id"),
   homeSchoolId: text("home_school_id").notNull(),
   opponentSchoolId: text("opponent_school_id").notNull(),
   eloOffset: real("elo_offset").notNull(),
