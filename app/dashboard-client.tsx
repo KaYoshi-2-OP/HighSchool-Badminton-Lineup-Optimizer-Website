@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import ClaudeImportAssistant from "./claude-import-assistant";
 
 type School = { id: string; name: string };
 type Player = {
@@ -447,6 +448,7 @@ export default function DashboardClient({ currentUser }: { currentUser: { userna
 
         {data && tab === "data" && (
           <div className="data-layout">
+          <ClaudeImportAssistant />
             <section className="panel import-panel">
               <div className="upload-mark"><Icon name="upload"/></div><p className="eyebrow">STEP 1</p><h2>Import season rosters</h2><p>Returning players are recognized by their stable player ID, even when their anonymous rank label changes. At each new season, they keep the higher of carried Elo and their new rank-based initialized Elo. Set active to 0 for historical or ineligible players.</p><button className="primary-button" disabled={importing !== null} onClick={() => rosterInput.current?.click()}>{importing === "roster" ? "Importing…" : "Choose roster CSV"}</button><button className="text-button" onClick={() => downloadTemplate("roster_template.csv", rosterTemplate)}>Download roster template</button>
             </section>
