@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import ClaudeImportAssistant from "./claude-import-assistant";
 
 type School = { id: string; name: string };
 type Player = {
@@ -574,6 +575,7 @@ export default function DashboardClient({ currentUser }: { currentUser: { userna
 
         {data && tab === "data" && (
           <div className="data-layout">
+          <ClaudeImportAssistant />
             <section className="panel format-panel">
               <div className="panel-heading">
                 <div><p className="eyebrow">SEASON LEAGUE FORMAT</p><h2>How many of each event will be played?</h2></div>
