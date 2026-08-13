@@ -135,6 +135,23 @@ export const playerSeasons = sqliteTable("player_seasons", {
   index("player_seasons_school_season_idx").on(table.schoolId, table.season),
 ]);
 
+export const seasonFormats = sqliteTable("season_formats", {
+  id: text("id").primaryKey(),
+  accountId: text("account_id").notNull(),
+  homeSchoolId: text("home_school_id").notNull(),
+  season: integer("season").notNull(),
+  boysSingles: integer("boys_singles").notNull(),
+  girlsSingles: integer("girls_singles").notNull(),
+  boysDoubles: integer("boys_doubles").notNull(),
+  girlsDoubles: integer("girls_doubles").notNull(),
+  mixedDoubles: integer("mixed_doubles").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("season_format_unique").on(table.accountId, table.homeSchoolId, table.season),
+  index("season_formats_home_season_idx").on(table.homeSchoolId, table.season),
+]);
+
 export const opponentCalibrations = sqliteTable("opponent_calibrations", {
   id: text("id").primaryKey(),
   accountId: text("account_id"),

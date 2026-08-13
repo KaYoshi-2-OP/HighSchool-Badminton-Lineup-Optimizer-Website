@@ -19,7 +19,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     const { assertSameOrigin, getAccountFromCookieHeader } = await import("../../../lib/auth");
-    const { confirmMeet, importMatches, importRosters, previewMeet } = await import("../../../lib/server-store");
+    const { confirmMeet, importMatches, importRosters, previewMeet, saveSeasonFormat } = await import("../../../lib/server-store");
     assertSameOrigin(request);
     const account = await getAccountFromCookieHeader(request.headers.get("cookie"));
     if (!account) return Response.json({ error: "Sign in to continue." }, { status: 401 });
@@ -28,6 +28,12 @@ export async function POST(request: Request) {
       homeSchoolId?: string;
       opponentSchoolId?: string;
       rows?: Array<Record<string, string | number | null>>;
+      season?: number;
+      boysSingles?: number;
+      girlsSingles?: number;
+      boysDoubles?: number;
+      girlsDoubles?: number;
+      mixedDoubles?: number;
     };
     if (payload.action === "import_rosters") {
       return Response.json(await importRosters(account, payload.rows ?? []));
@@ -40,6 +46,16 @@ export async function POST(request: Request) {
     }
     if (payload.action === "confirm_meet") {
       return Response.json(await confirmMeet(account, payload.rows ?? []));
+    }
+    if (payload.action === "save_season_format") {
+      return Response.json(await saveSeasonFormat(account, {
+        season: Number(payload.season),
+        boysSingles: Number(payload.boysSingles),
+        girlsSingles: Number(payload.girlsSingles),
+        boysDoubles: Number(payload.boysDoubles),
+        girlsDoubles: Number(payload.girlsDoubles),
+        mixedDoubles: Number(payload.mixedDoubles),
+      }));
     }
     return Response.json({ error: "Unknown action." }, { status: 400 });
   } catch (error) {

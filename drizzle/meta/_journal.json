@@ -36,6 +36,13 @@
       "when": 1786305537355,
       "tag": "0004_closed_talisman",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1786578095424,
+      "tag": "0005_fine_nitro",
+      "breakpoints": true
     }
   ]
 }

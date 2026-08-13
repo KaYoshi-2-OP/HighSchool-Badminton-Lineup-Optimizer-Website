@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { initializeAccountWorkspace, type AccountContext } from "./server-store";
 
-const PBKDF2_ITERATIONS = 100_000;
+const PBKDF2_ITERATIONS = 600_000;
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
 const LOGIN_WINDOW_MS = 10 * 60 * 1000;
 const LOGIN_LOCK_MS = 15 * 60 * 1000;

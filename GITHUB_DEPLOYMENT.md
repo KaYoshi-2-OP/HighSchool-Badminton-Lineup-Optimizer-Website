@@ -7,7 +7,7 @@ The repository is the source of the website. A Cloudflare Worker runs the server
 1. Upload this complete project to your GitHub repository and make sure the default branch is `main`.
 2. Create or sign in to a Cloudflare account.
 3. In Cloudflare, copy your **Account ID**.
-4. Create a Cloudflare API token with **Workers Scripts: Edit** and **D1: Edit** permissions. Limit it to only your Cloudflare account.
+4. Create a Cloudflare API token with permission to edit Workers. Limit it to only your Cloudflare account.
 5. In GitHub, open the repository and select **Settings → Secrets and variables → Actions**.
 6. Add these two repository secrets:
    - `CLOUDFLARE_ACCOUNT_ID`

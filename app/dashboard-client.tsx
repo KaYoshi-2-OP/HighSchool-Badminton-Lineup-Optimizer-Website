@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import ClaudeImportAssistant from "./claude-import-assistant";
 
 type School = { id: string; name: string };
 type Player = {
@@ -18,6 +17,20 @@ type Player = {
   active: boolean;
 };
 type Position = { position: string; currentElo: number; totalWeight: number; matchesUsed: number };
+type SeasonFormat = {
+  season: number;
+  boysSingles: number;
+  girlsSingles: number;
+  boysDoubles: number;
+  girlsDoubles: number;
+  mixedDoubles: number;
+  eventOrder: string[];
+  totalEvents: number;
+  winsNeeded: number;
+  requiredBoys: number;
+  requiredGirls: number;
+  configured: boolean;
+};
 type DashboardData = {
   schools: School[];
   selectedHome: School;
@@ -25,6 +38,9 @@ type DashboardData = {
   homeLocked: boolean;
   players: Player[];
   positions: Position[];
+  rosterSeason: number;
+  seasonFormat: SeasonFormat;
+  seasonFormats: SeasonFormat[];
   yearWeights: Array<{ year: number; weight: number }>;
   matchCount: number;
   returningPlayers: number;
@@ -44,7 +60,7 @@ type LineupRow = {
   opponentElo: number;
   winProbability: number;
 };
-type Optimization = { lineup: LineupRow[]; expectedWins: number; rawExpectedWins: number };
+type Optimization = { lineup: LineupRow[]; expectedWins: number; rawExpectedWins: number; searches: number };
 type RatingChange = { oldElo: number; change: number; newElo: number };
 type MeetReceipt = {
   exact: boolean;
@@ -69,7 +85,7 @@ type ResultRow = {
 };
 type Tab = "dashboard" | "players" | "results" | "data";
 
-const eventOrder = [
+const defaultEventOrder = [
   "BS1", "BS2", "BS3", "BS4",
   "GS1", "GS2", "GS3", "GS4",
   "BD1", "BD2", "BD3",
@@ -77,7 +93,7 @@ const eventOrder = [
   "XD1", "XD2", "XD3",
 ];
 
-const emptyResultRows = (): ResultRow[] => eventOrder.map((position) => ({
+const emptyResultRows = (eventOrder: string[]): ResultRow[] => eventOrder.map((position) => ({
   position,
   player1: "",
   player2: "",
@@ -93,9 +109,34 @@ const rosterTemplate = `school,season,player_id,name,gender,rank,ladder_size,act
 North Valley High,2026,P001,B1,Boys,1,21,1
 North Valley High,2026,P002,G1,Girls,1,17,1`;
 
-const matchTemplate = `date,home_school,opponent_school,position,home_player_1,home_player_2,g1_home,g1_opponent,g2_home,g2_opponent,g3_home,g3_opponent
-2026-03-12,North Valley High,East Ridge High,BS1,B1,,21,17,21,19,,
-2026-03-12,North Valley High,East Ridge High,BD1,B3,B5,18,21,21,16,21,14`;
+const defaultFormat = (season: number): SeasonFormat => ({
+  season,
+  boysSingles: 4,
+  girlsSingles: 4,
+  boysDoubles: 3,
+  girlsDoubles: 3,
+  mixedDoubles: 3,
+  eventOrder: defaultEventOrder,
+  totalEvents: 17,
+  winsNeeded: 9,
+  requiredBoys: 13,
+  requiredGirls: 13,
+  configured: false,
+});
+
+function formatForSeason(data: DashboardData, season: number) {
+  return data.seasonFormats.find((format) => format.season === season)
+    ?? (season === data.rosterSeason ? data.seasonFormat : defaultFormat(season));
+}
+
+function matchTemplate(data: DashboardData) {
+  const date = `${data.seasonFormat.season}-03-01`;
+  const header = "date,home_school,opponent_school,position,home_player_1,home_player_2,g1_home,g1_opponent,g2_home,g2_opponent,g3_home,g3_opponent";
+  const rows = data.seasonFormat.eventOrder.map((position) =>
+    `${date},${data.selectedHome.name},Opponent High,${position},,,,,,,,,`,
+  );
+  return [header, ...rows].join("\n");
+}
 
 function Icon({ name }: { name: "grid" | "users" | "data" | "results" | "shuttle" | "upload" | "check" }) {
   const paths = {
@@ -145,7 +186,7 @@ function downloadTemplate(filename: string, content: string) {
   URL.revokeObjectURL(url);
 }
 
-function meetWinProbability(probabilities: number[]) {
+function meetWinProbability(probabilities: number[], winsNeeded: number) {
   let distribution = new Array(probabilities.length + 1).fill(0);
   distribution[0] = 1;
   probabilities.forEach((probability, index) => {
@@ -156,7 +197,7 @@ function meetWinProbability(probabilities: number[]) {
     }
     distribution = next;
   });
-  return distribution.slice(9).reduce((sum, probability) => sum + probability, 0);
+  return distribution.slice(winsNeeded).reduce((sum, probability) => sum + probability, 0);
 }
 
 export default function DashboardClient({ currentUser }: { currentUser: { username: string } }) {
@@ -168,13 +209,23 @@ export default function DashboardClient({ currentUser }: { currentUser: { userna
   const [optimizing, setOptimizing] = useState(false);
   const [importing, setImporting] = useState<"roster" | "matches" | null>(null);
   const [matchDate, setMatchDate] = useState(() => new Date().toISOString().slice(0, 10));
-  const [resultRows, setResultRows] = useState<ResultRow[]>(emptyResultRows);
+  const [resultRows, setResultRows] = useState<ResultRow[]>(() => emptyResultRows(defaultEventOrder));
+  const [formatDraft, setFormatDraft] = useState({
+    season: new Date().getUTCFullYear(),
+    boysSingles: 4,
+    girlsSingles: 4,
+    boysDoubles: 3,
+    girlsDoubles: 3,
+    mixedDoubles: 3,
+  });
+  const [savingFormat, setSavingFormat] = useState(false);
   const [receipt, setReceipt] = useState<MeetReceipt | null>(null);
   const [resultAction, setResultAction] = useState<"preview" | "confirm" | null>(null);
   const [signingOut, setSigningOut] = useState(false);
   const [notice, setNotice] = useState<{ tone: "success" | "error"; text: string } | null>(null);
   const rosterInput = useRef<HTMLInputElement>(null);
   const matchInput = useRef<HTMLInputElement>(null);
+  const matchDateRef = useRef(matchDate);
 
   const loadData = useCallback(async (nextOpponent?: string) => {
     setLoading(true);
@@ -190,6 +241,19 @@ export default function DashboardClient({ currentUser }: { currentUser: { userna
       if (!response.ok) throw new Error(payload.error ?? "Could not load data.");
       setData(payload);
       setOpponentId(payload.selectedOpponent?.id ?? "");
+      setFormatDraft({
+        season: payload.seasonFormat.season,
+        boysSingles: payload.seasonFormat.boysSingles,
+        girlsSingles: payload.seasonFormat.girlsSingles,
+        boysDoubles: payload.seasonFormat.boysDoubles,
+        girlsDoubles: payload.seasonFormat.girlsDoubles,
+        mixedDoubles: payload.seasonFormat.mixedDoubles,
+      });
+      const resultYear = Number(matchDateRef.current.slice(0, 4));
+      const resultFormat = formatForSeason(payload, resultYear);
+      setResultRows((current) => current.map((row) => row.position).join("|") === resultFormat.eventOrder.join("|")
+        ? current
+        : emptyResultRows(resultFormat.eventOrder));
     } catch (error) {
       setNotice({ tone: "error", text: error instanceof Error ? error.message : "Could not load data." });
     } finally { setLoading(false); }
@@ -275,11 +339,12 @@ export default function DashboardClient({ currentUser }: { currentUser: { userna
         data.players,
         data.positions,
         data.historicalFit?.actualWinsPerMeet,
+        data.seasonFormat,
       );
       setOptimization(result);
       setNotice({ tone: "success", text: data.historicalFit
         ? `A legal lineup was found and anchored to ${data.historicalFit.meetCount} recorded meet${data.historicalFit.meetCount === 1 ? "" : "s"}.`
-        : "A high-scoring legal lineup has been found across 120 starting configurations." });
+        : `A high-scoring legal lineup has been found across ${result.searches} starting configurations.` });
     } catch (error) {
       setNotice({ tone: "error", text: error instanceof Error ? error.message : "Optimization failed." });
     } finally { setOptimizing(false); }
@@ -307,8 +372,69 @@ export default function DashboardClient({ currentUser }: { currentUser: { userna
     } finally { setImporting(null); }
   };
 
+  const chooseFormatSeason = (season: number) => {
+    const existing = data?.seasonFormats.find((format) => format.season === season)
+      ?? defaultFormat(season);
+    setFormatDraft({
+      season,
+      boysSingles: existing.boysSingles,
+      girlsSingles: existing.girlsSingles,
+      boysDoubles: existing.boysDoubles,
+      girlsDoubles: existing.girlsDoubles,
+      mixedDoubles: existing.mixedDoubles,
+    });
+  };
+
+  const saveFormat = async () => {
+    setSavingFormat(true); setNotice(null);
+    try {
+      const response = await fetch("/api/data", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "save_season_format", ...formatDraft }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error ?? "The league format could not be saved.");
+      await loadData(opponentId);
+      const saved = payload.format as SeasonFormat;
+      setFormatDraft({
+        season: saved.season,
+        boysSingles: saved.boysSingles,
+        girlsSingles: saved.girlsSingles,
+        boysDoubles: saved.boysDoubles,
+        girlsDoubles: saved.girlsDoubles,
+        mixedDoubles: saved.mixedDoubles,
+      });
+      setNotice({
+        tone: "success",
+        text: `${saved.season} saved as a ${saved.totalEvents}-event format. ${saved.winsNeeded} wins are required for an outright meet victory.`,
+      });
+    } catch (error) {
+      setNotice({ tone: "error", text: error instanceof Error ? error.message : "The league format could not be saved." });
+    } finally { setSavingFormat(false); }
+  };
+
+  const changeMatchDate = (value: string) => {
+    matchDateRef.current = value;
+    setMatchDate(value);
+    setReceipt(null);
+    if (!data) return;
+    const season = Number(value.slice(0, 4));
+    const format = formatForSeason(data, season);
+    setResultRows(emptyResultRows(format.eventOrder));
+  };
+
   const probabilities = optimization?.lineup.map((row) => row.winProbability) ?? [];
-  const meetProbability = probabilities.length ? meetWinProbability(probabilities) : null;
+  const meetProbability = probabilities.length && data
+    ? meetWinProbability(probabilities, data.seasonFormat.winsNeeded)
+    : null;
+  const resultSeason = Number(matchDate.slice(0, 4));
+  const resultFormat = data ? formatForSeason(data, resultSeason) : defaultFormat(resultSeason);
+  const formatTotal = formatDraft.boysSingles + formatDraft.girlsSingles
+    + formatDraft.boysDoubles + formatDraft.girlsDoubles + formatDraft.mixedDoubles;
+  const formatWinsNeeded = Math.floor(formatTotal / 2) + 1;
+  const formatRequiredBoys = formatDraft.boysSingles + 2 * formatDraft.boysDoubles + formatDraft.mixedDoubles;
+  const formatRequiredGirls = formatDraft.girlsSingles + 2 * formatDraft.girlsDoubles + formatDraft.mixedDoubles;
   const activePlayers = useMemo(() => data?.players.filter((player) => player.active) ?? [], [data]);
   const playersFor = (position: string, slot: 1 | 2) => {
     const gender = position.startsWith("GS") || position.startsWith("GD") || (position.startsWith("XD") && slot === 2)
@@ -336,7 +462,7 @@ export default function DashboardClient({ currentUser }: { currentUser: { userna
 
       <main className="main-content">
         <header className="topbar">
-          <div><p className="eyebrow">ONE HOME SCHOOL · MULTI-OPPONENT ANALYTICS</p><h1>{tab === "dashboard" ? "Lineup projection" : tab === "players" ? "Player ratings" : tab === "results" ? "Enter true match results" : "Historical data"}</h1></div>
+          <div><p className="eyebrow">ONE HOME SCHOOL · MULTI-OPPONENT ANALYTICS</p><h1>{tab === "dashboard" ? "Lineup projection" : tab === "players" ? "Player ratings" : tab === "results" ? "Enter true match results" : "Season setup & historical data"}</h1></div>
           <div className="topbar-actions">
             {data?.demo && <span className="demo-badge">Demo dataset</span>}
             <div className="account-summary" aria-label={`Signed in as ${currentUser.username}`}>
@@ -361,8 +487,8 @@ export default function DashboardClient({ currentUser }: { currentUser: { userna
             </section>
 
             <section className="metric-grid">
-              <article><p>Expected Wins</p><strong>{optimization ? optimization.expectedWins.toFixed(2) : "—"}<small>/17</small></strong><span>{optimization ? (data.historicalFit ? "History-anchored lineup projection" : "Best search projection") : "Run the optimizer"}</span></article>
-              <article><p>Meet Win Probability</p><strong>{meetProbability === null ? "—" : `${Math.round(meetProbability * 100)}%`}</strong><span>{meetProbability === null ? "Calculated from 17 events" : "Probability of at least 9 wins"}</span></article>
+              <article><p>Expected Wins</p><strong>{optimization ? optimization.expectedWins.toFixed(2) : "—"}<small>/{data.seasonFormat.totalEvents}</small></strong><span>{optimization ? (data.historicalFit ? "History-anchored lineup projection" : "Best search projection") : `Using the ${data.rosterSeason} league format`}</span></article>
+              <article><p>Meet Win Probability</p><strong>{meetProbability === null ? "—" : `${Math.round(meetProbability * 100)}%`}</strong><span>{meetProbability === null ? `Calculated from ${data.seasonFormat.totalEvents} events` : `Probability of at least ${data.seasonFormat.winsNeeded} wins`}</span></article>
               <article><p>Historical Fit</p><strong>{data.historicalFit ? `${data.historicalFit.actualWinsPerMeet.toFixed(1)} ≈ ${data.historicalFit.projectedWinsPerMeet.toFixed(1)}` : "—"}</strong><span>{data.historicalFit ? `Actual vs model across ${data.historicalFit.meetCount} meet${data.historicalFit.meetCount === 1 ? "" : "s"}` : "No recorded meets for this opponent"}</span></article>
             </section>
 
@@ -392,10 +518,10 @@ export default function DashboardClient({ currentUser }: { currentUser: { userna
             <section className="panel meet-entry-panel">
               <div className="panel-heading result-heading">
                 <div><p className="eyebrow">ACTUAL LINEUP + FINAL SCORES</p><h2>Record one complete dual meet</h2></div>
-                <span className="status-pill">17 required events</span>
+                <span className="status-pill">{resultFormat.totalEvents} required events · {resultSeason}</span>
               </div>
               <div className="meet-details">
-                <label><span>MEET DATE</span><input type="date" value={matchDate} onChange={(event) => { setMatchDate(event.target.value); setReceipt(null); }}/></label>
+                <label><span>MEET DATE</span><input type="date" value={matchDate} onChange={(event) => changeMatchDate(event.target.value)}/></label>
                 <div className="locked-school"><span>HOME SCHOOL · LOCKED</span><strong>{data.selectedHome.name}</strong></div>
                 <label><span>OPPONENT</span><select value={opponentId} onChange={(event) => void changeOpponent(event.target.value)}>{data.schools.filter((school) => school.id !== data.selectedHome.id).map((school) => <option key={school.id} value={school.id}>{school.name}</option>)}</select></label>
               </div>
@@ -435,7 +561,7 @@ export default function DashboardClient({ currentUser }: { currentUser: { userna
               <section className={`panel receipt-panel ${receipt.exact ? "confirmed" : ""}`}>
                 <div className="receipt-hero">
                   <div><p className="eyebrow">{receipt.exact ? "CONFIRMED + SAVED" : "PREVIEW · NOT SAVED"}</p><h2>{receipt.homeSchool} {receipt.homeWins}–{receipt.homeLosses} {receipt.opponentSchool}</h2><p>{receipt.exact ? "These are the final stored values after the complete historical replay." : "These estimates use the current ratings. Confirmation recalculates the full history and returns the exact stored values."}</p></div>
-                  {receipt.exact ? <button className="secondary-button" onClick={() => { setResultRows(emptyResultRows()); setReceipt(null); }}>Enter another meet</button> : <button className="primary-button" disabled={resultAction !== null} onClick={() => void submitMeet("confirm")}>{resultAction === "confirm" ? "Saving…" : "Confirm and Save Meet"}</button>}
+                  {receipt.exact ? <button className="secondary-button" onClick={() => { setResultRows(emptyResultRows(resultFormat.eventOrder)); setReceipt(null); }}>Enter another meet</button> : <button className="primary-button" disabled={resultAction !== null} onClick={() => void submitMeet("confirm")}>{resultAction === "confirm" ? "Saving…" : "Confirm and Save Meet"}</button>}
                 </div>
                 <div className="receipt-tables">
                   <div><h3>Home roster changes</h3><div className="table-wrap"><table><thead><tr><th>Player</th><th>Old Elo</th><th>Change</th><th>New Elo</th></tr></thead><tbody>{receipt.playerChanges.map((change) => <tr key={change.code}><td><strong>{change.name}</strong><small>{change.code}</small></td><td>{change.oldElo.toFixed(1)}</td><td><span className={change.change >= 0 ? "positive-change" : "negative-change"}>{signed(change.change)}</span></td><td><strong>{change.newElo.toFixed(1)}</strong></td></tr>)}</tbody></table></div></div>
@@ -448,12 +574,34 @@ export default function DashboardClient({ currentUser }: { currentUser: { userna
 
         {data && tab === "data" && (
           <div className="data-layout">
-          <ClaudeImportAssistant />
-            <section className="panel import-panel">
-              <div className="upload-mark"><Icon name="upload"/></div><p className="eyebrow">STEP 1</p><h2>Import season rosters</h2><p>Returning players are recognized by their stable player ID, even when their anonymous rank label changes. At each new season, they keep the higher of carried Elo and their new rank-based initialized Elo. Set active to 0 for historical or ineligible players.</p><button className="primary-button" disabled={importing !== null} onClick={() => rosterInput.current?.click()}>{importing === "roster" ? "Importing…" : "Choose roster CSV"}</button><button className="text-button" onClick={() => downloadTemplate("roster_template.csv", rosterTemplate)}>Download roster template</button>
+            <section className="panel format-panel">
+              <div className="panel-heading">
+                <div><p className="eyebrow">SEASON LEAGUE FORMAT</p><h2>How many of each event will be played?</h2></div>
+                <span className="status-pill">{formatTotal} total events</span>
+              </div>
+              <p className="format-intro">Save the league format before entering that season’s results. The optimizer, required roster size, result form, opponent positions, projected score, and meet-win threshold all update from these five counts. Existing seasons use the standard 17-event format unless you save a different one.</p>
+              <div className="format-controls">
+                <label><span>SEASON</span><input type="number" min="1900" max="2200" value={formatDraft.season} onChange={(event) => chooseFormatSeason(Number(event.target.value))}/></label>
+                <label><span>BOYS SINGLES</span><input type="number" min="0" max="12" value={formatDraft.boysSingles} onChange={(event) => setFormatDraft((current) => ({ ...current, boysSingles: Number(event.target.value) }))}/></label>
+                <label><span>GIRLS SINGLES</span><input type="number" min="0" max="12" value={formatDraft.girlsSingles} onChange={(event) => setFormatDraft((current) => ({ ...current, girlsSingles: Number(event.target.value) }))}/></label>
+                <label><span>BOYS DOUBLES</span><input type="number" min="0" max="12" value={formatDraft.boysDoubles} onChange={(event) => setFormatDraft((current) => ({ ...current, boysDoubles: Number(event.target.value) }))}/></label>
+                <label><span>GIRLS DOUBLES</span><input type="number" min="0" max="12" value={formatDraft.girlsDoubles} onChange={(event) => setFormatDraft((current) => ({ ...current, girlsDoubles: Number(event.target.value) }))}/></label>
+                <label><span>MIXED DOUBLES</span><input type="number" min="0" max="12" value={formatDraft.mixedDoubles} onChange={(event) => setFormatDraft((current) => ({ ...current, mixedDoubles: Number(event.target.value) }))}/></label>
+              </div>
+              <div className="format-summary">
+                <article><span>Meet size</span><strong>{formatTotal}</strong><small>events</small></article>
+                <article><span>Outright win</span><strong>{formatWinsNeeded}</strong><small>wins</small></article>
+                <article><span>Roster needed</span><strong>{formatRequiredBoys} + {formatRequiredGirls}</strong><small>boys + girls</small></article>
+                <button className="primary-button" disabled={savingFormat || formatTotal < 1 || formatTotal > 50} onClick={() => void saveFormat()}>{savingFormat ? "Saving…" : `Save ${formatDraft.season} Format`}</button>
+              </div>
+              {formatTotal % 2 === 0 && <p className="format-warning">An even number of events can produce a tied meet. The displayed meet-win probability measures an outright win of at least {formatWinsNeeded} events.</p>}
+              <div className="saved-formats"><span>SAVED OR ACTIVE SEASONS</span>{data.seasonFormats.map((format) => <button key={format.season} type="button" onClick={() => chooseFormatSeason(format.season)} className={formatDraft.season === format.season ? "active" : ""}>{format.season} · {format.totalEvents} events{format.configured ? "" : " (default)"}</button>)}</div>
             </section>
             <section className="panel import-panel">
-              <div className="upload-mark"><Icon name="data"/></div><p className="eyebrow">STEP 2</p><h2>Import historical matches</h2><p>Upload every event score from the available years. Duplicate events are ignored, ratings are replayed chronologically, and opponent positional Elo is rebuilt automatically.</p><button className="primary-button" disabled={importing !== null} onClick={() => matchInput.current?.click()}>{importing === "matches" ? "Recalculating…" : "Choose match CSV"}</button><button className="text-button" onClick={() => downloadTemplate("match_history_template.csv", matchTemplate)}>Download match template</button>
+              <div className="upload-mark"><Icon name="upload"/></div><p className="eyebrow">SEASON ROSTER DATA</p><h2>Import season rosters</h2><p>Returning players are recognized by their stable player ID, even when their anonymous rank label changes. At each new season, they keep the higher of carried Elo and their new rank-based initialized Elo. Set active to 0 for historical or ineligible players.</p><button className="primary-button" disabled={importing !== null} onClick={() => rosterInput.current?.click()}>{importing === "roster" ? "Importing…" : "Choose roster CSV"}</button><button className="text-button" onClick={() => downloadTemplate("roster_template.csv", rosterTemplate)}>Download roster template</button>
+            </section>
+            <section className="panel import-panel">
+              <div className="upload-mark"><Icon name="data"/></div><p className="eyebrow">HISTORICAL MATCH DATA</p><h2>Import historical matches</h2><p>Upload every event score from the available years. Each row is checked against that season’s saved format. Duplicate events are ignored, ratings are replayed chronologically, and opponent positional Elo is rebuilt automatically.</p><button className="primary-button" disabled={importing !== null} onClick={() => matchInput.current?.click()}>{importing === "matches" ? "Recalculating…" : "Choose match CSV"}</button><button className="text-button" onClick={() => downloadTemplate("match_history_template.csv", matchTemplate(data))}>Download current-format template</button>
             </section>
             <section className="panel weighting-panel">
               <div className="panel-heading"><div><p className="eyebrow">ROLLING RECENCY WEIGHTING</p><h2>Ten-season window</h2></div><span className="formula">w = 1, 2, …, 10</span></div>

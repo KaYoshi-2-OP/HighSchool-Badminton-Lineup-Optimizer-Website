@@ -1,12 +1,40 @@
+export type EventPrefix = "BS" | "GS" | "BD" | "GD" | "XD";
+export type EventCode = `${EventPrefix}${number}`;
+
+export type EventCounts = {
+  boysSingles: number;
+  girlsSingles: number;
+  boysDoubles: number;
+  girlsDoubles: number;
+  mixedDoubles: number;
+};
+
+export type SeasonFormat = EventCounts & {
+  season: number;
+  eventOrder: EventCode[];
+  totalEvents: number;
+  winsNeeded: number;
+  requiredBoys: number;
+  requiredGirls: number;
+  configured: boolean;
+};
+
+export const DEFAULT_EVENT_COUNTS: EventCounts = {
+  boysSingles: 4,
+  girlsSingles: 4,
+  boysDoubles: 3,
+  girlsDoubles: 3,
+  mixedDoubles: 3,
+};
+
 export const EVENT_ORDER = [
   "BS1", "BS2", "BS3", "BS4",
   "GS1", "GS2", "GS3", "GS4",
   "BD1", "BD2", "BD3",
   "GD1", "GD2", "GD3",
   "XD1", "XD2", "XD3",
-] as const;
+] as EventCode[];
 
-export type EventCode = (typeof EVENT_ORDER)[number];
 export type Gender = "Boys" | "Girls";
 
 export const HOME_K_FACTOR = 2;
@@ -103,5 +131,66 @@ export function defaultPositionElo(position: EventCode): number {
 }
 
 export function isEventCode(value: string): value is EventCode {
-  return (EVENT_ORDER as readonly string[]).includes(value);
+  return /^(BS|GS|BD|GD|XD)[1-9]\d*$/.test(value);
+}
+
+function eventSeries(prefix: EventPrefix, count: number): EventCode[] {
+  return Array.from({ length: count }, (_, index) => `${prefix}${index + 1}` as EventCode);
+}
+
+export function validateEventCounts(counts: EventCounts): EventCounts {
+  const keys: Array<keyof EventCounts> = [
+    "boysSingles",
+    "girlsSingles",
+    "boysDoubles",
+    "girlsDoubles",
+    "mixedDoubles",
+  ];
+  const entries = keys.map((key) => [key, counts[key]] as [keyof EventCounts, number]);
+  for (const [key, value] of entries) {
+    if (!Number.isInteger(value) || value < 0 || value > 12) {
+      throw new Error(`${key} must be a whole number from 0 through 12.`);
+    }
+  }
+  const total = entries.reduce((sum, [, value]) => sum + value, 0);
+  if (total < 1) throw new Error("A league format must contain at least one event.");
+  if (total > 50) throw new Error("A league format cannot contain more than 50 events.");
+  return { ...counts };
+}
+
+export function buildEventOrder(input: EventCounts): EventCode[] {
+  const counts = validateEventCounts(input);
+  return [
+    ...eventSeries("BS", counts.boysSingles),
+    ...eventSeries("GS", counts.girlsSingles),
+    ...eventSeries("BD", counts.boysDoubles),
+    ...eventSeries("GD", counts.girlsDoubles),
+    ...eventSeries("XD", counts.mixedDoubles),
+  ];
+}
+
+export function makeSeasonFormat(
+  season: number,
+  input: EventCounts = DEFAULT_EVENT_COUNTS,
+  configured = false,
+): SeasonFormat {
+  if (!Number.isInteger(season) || season < 1900 || season > 2200) {
+    throw new Error("Season must be a four-digit year.");
+  }
+  const counts = validateEventCounts(input);
+  const eventOrder = buildEventOrder(counts);
+  return {
+    season,
+    ...counts,
+    eventOrder,
+    totalEvents: eventOrder.length,
+    winsNeeded: Math.floor(eventOrder.length / 2) + 1,
+    requiredBoys: counts.boysSingles + 2 * counts.boysDoubles + counts.mixedDoubles,
+    requiredGirls: counts.girlsSingles + 2 * counts.girlsDoubles + counts.mixedDoubles,
+    configured,
+  };
+}
+
+export function eventNumber(event: EventCode): number {
+  return Number(event.slice(2));
 }
