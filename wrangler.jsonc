@@ -16,14 +16,14 @@
     "directory": "./dist/client",
     "run_worker_first": false
   },
-  "d1_databases": [
-    {
-      "binding": "DB",
-      "database_name": "high-school-badminton-lineup-optimizer-db",
-      "database_id": "e93c118c-913b-4b0f-8f69-cfc019219c8d",
-      "migrations_dir": "drizzle"
-    }
-  ],
+"d1_databases": [
+  {
+    "binding": "DB",
+    "database_name": "high-school-badminton-lineup-optimizer-db",
+    "database_id": "e93c118c-913b-4b0f-8f69-cfc019219c8d",
+    "migrations_dir": "drizzle"
+  }
+],,
   "observability": {
     "enabled": true
   }
