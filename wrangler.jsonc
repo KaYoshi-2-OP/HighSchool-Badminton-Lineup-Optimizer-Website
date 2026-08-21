@@ -23,7 +23,7 @@
     "database_id": "e93c118c-913b-4b0f-8f69-cfc019219c8d",
     "migrations_dir": "drizzle"
   }
-],,
+],
   "observability": {
     "enabled": true
   }
