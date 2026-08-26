@@ -38,6 +38,7 @@ export async function POST(request: Request) {
       { headers: { "Set-Cookie": sessionCookie(result.token, request.url) } },
     );
   } catch (error) {
+        console.error("Authentication request failed:", error);
     const status = typeof error === "object" && error !== null && "status" in error && typeof error.status === "number"
       ? error.status
       : 500;
