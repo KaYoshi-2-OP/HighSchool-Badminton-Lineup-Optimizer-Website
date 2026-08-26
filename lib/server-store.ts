@@ -1,12 +1,9 @@
 import { env } from "cloudflare:workers";
 import {
-  DEFAULT_EVENT_COUNTS,
   EVENT_ORDER,
-  type EventCounts,
   type EventCode,
   type PlayerRecord,
   type PositionRating,
-  type SeasonFormat,
   defaultPositionElo,
   eloWinProbability,
   fitOpponentEloOffset,
@@ -15,7 +12,6 @@ import {
   normalizeGender,
   normalizeName,
   preseasonElo,
-  makeSeasonFormat,
   schoolIdFromName,
   smoothedHistoricalWins,
 } from "./domain";
@@ -58,15 +54,6 @@ type DbCalibration = {
   projected_wins: number;
   event_count: number;
   meet_count: number;
-};
-
-type DbSeasonFormat = {
-  season: number;
-  boys_singles: number;
-  girls_singles: number;
-  boys_doubles: number;
-  girls_doubles: number;
-  mixed_doubles: number;
 };
 
 function db() {
@@ -179,21 +166,6 @@ async function ensureSchema() {
     )`),
     db().prepare("CREATE UNIQUE INDEX IF NOT EXISTS player_season_unique ON player_seasons (player_id, season)"),
     db().prepare("CREATE INDEX IF NOT EXISTS player_seasons_school_season_idx ON player_seasons (school_id, season)"),
-    db().prepare(`CREATE TABLE IF NOT EXISTS season_formats (
-      id TEXT PRIMARY KEY NOT NULL,
-      account_id TEXT NOT NULL,
-      home_school_id TEXT NOT NULL,
-      season INTEGER NOT NULL,
-      boys_singles INTEGER NOT NULL,
-      girls_singles INTEGER NOT NULL,
-      boys_doubles INTEGER NOT NULL,
-      girls_doubles INTEGER NOT NULL,
-      mixed_doubles INTEGER NOT NULL,
-      created_at TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL,
-      updated_at TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL
-    )`),
-    db().prepare("CREATE UNIQUE INDEX IF NOT EXISTS season_format_unique ON season_formats (account_id, home_school_id, season)"),
-    db().prepare("CREATE INDEX IF NOT EXISTS season_formats_home_season_idx ON season_formats (home_school_id, season)"),
     db().prepare(`CREATE TABLE IF NOT EXISTS opponent_calibrations (
       id TEXT PRIMARY KEY NOT NULL,
       account_id TEXT,
@@ -215,7 +187,6 @@ async function ensureSchema() {
     "match_events",
     "opponent_positions",
     "player_seasons",
-    "season_formats",
     "opponent_calibrations",
   ]) {
     const columns = await db().prepare(`PRAGMA table_info(${table})`).all<{ name: string }>();
@@ -306,126 +277,6 @@ function mapPlayer(row: DbPlayer): PlayerRecord {
   };
 }
 
-function mapSeasonFormat(row: DbSeasonFormat, configured = true): SeasonFormat {
-  return makeSeasonFormat(Number(row.season), {
-    boysSingles: Number(row.boys_singles),
-    girlsSingles: Number(row.girls_singles),
-    boysDoubles: Number(row.boys_doubles),
-    girlsDoubles: Number(row.girls_doubles),
-    mixedDoubles: Number(row.mixed_doubles),
-  }, configured);
-}
-
-async function activeRosterSeason(accountId: string, homeSchoolId: string): Promise<number> {
-  const row = await db().prepare(
-    "SELECT MAX(last_season) AS season FROM players WHERE account_id = ? AND school_id = ?",
-  ).bind(accountId, homeSchoolId).first<{ season: number | null }>();
-  return Number(row?.season ?? new Date().getUTCFullYear());
-}
-
-async function readSeasonFormat(
-  accountId: string,
-  homeSchoolId: string,
-  season: number,
-): Promise<SeasonFormat> {
-  const row = await db().prepare(
-    `SELECT season, boys_singles, girls_singles, boys_doubles, girls_doubles, mixed_doubles
-     FROM season_formats WHERE account_id = ? AND home_school_id = ? AND season = ?`,
-  ).bind(accountId, homeSchoolId, season).first<DbSeasonFormat>();
-  if (row) return mapSeasonFormat(row);
-  const existingPositions = await db().prepare(
-    `SELECT DISTINCT position FROM match_events
-     WHERE account_id = ? AND home_school_id = ? AND season_year = ?`,
-  ).bind(accountId, homeSchoolId, season).all<{ position: string }>();
-  if (existingPositions.results.length) {
-    const counts: EventCounts = {
-      boysSingles: 0,
-      girlsSingles: 0,
-      boysDoubles: 0,
-      girlsDoubles: 0,
-      mixedDoubles: 0,
-    };
-    for (const [prefix, key] of [
-      ["BS", "boysSingles"],
-      ["GS", "girlsSingles"],
-      ["BD", "boysDoubles"],
-      ["GD", "girlsDoubles"],
-      ["XD", "mixedDoubles"],
-    ] as Array<[string, keyof EventCounts]>) {
-      const maximum = Math.max(0, ...existingPositions.results
-        .filter((entry) => entry.position.startsWith(prefix))
-        .map((entry) => Number(entry.position.slice(2)) || 0));
-      if (maximum > 0) counts[key] = maximum;
-    }
-    return makeSeasonFormat(season, counts, false);
-  }
-  return makeSeasonFormat(season, DEFAULT_EVENT_COUNTS, false);
-}
-
-async function listSeasonFormats(accountId: string, homeSchoolId: string, activeSeason: number) {
-  const rows = await db().prepare(
-    `SELECT season, boys_singles, girls_singles, boys_doubles, girls_doubles, mixed_doubles
-     FROM season_formats WHERE account_id = ? AND home_school_id = ? ORDER BY season`,
-  ).bind(accountId, homeSchoolId).all<DbSeasonFormat>();
-  const formats = rows.results.map((row) => mapSeasonFormat(row));
-  if (!formats.some((format) => format.season === activeSeason)) {
-    formats.push(makeSeasonFormat(activeSeason, DEFAULT_EVENT_COUNTS, false));
-  }
-  return formats.sort((a, b) => a.season - b.season);
-}
-
-export async function saveSeasonFormat(
-  account: AccountContext,
-  payload: { season: number } & EventCounts,
-) {
-  await ensureSchema();
-  const homeSchoolId = await readHomeSchoolId(account.id);
-  if (!homeSchoolId) throw new Error("Import the home-school roster before setting a league format.");
-  const format = makeSeasonFormat(Number(payload.season), {
-    boysSingles: Number(payload.boysSingles),
-    girlsSingles: Number(payload.girlsSingles),
-    boysDoubles: Number(payload.boysDoubles),
-    girlsDoubles: Number(payload.girlsDoubles),
-    mixedDoubles: Number(payload.mixedDoubles),
-  }, true);
-  const existing = await readSeasonFormat(account.id, homeSchoolId, format.season);
-  const recorded = await db().prepare(
-    `SELECT COUNT(*) AS count FROM match_events
-     WHERE account_id = ? AND home_school_id = ? AND season_year = ?`,
-  ).bind(account.id, homeSchoolId, format.season).first<{ count: number }>();
-  const unchanged = existing.eventOrder.join("|") === format.eventOrder.join("|");
-  if (Number(recorded?.count ?? 0) > 0 && !unchanged) {
-    throw new Error(
-      `The ${format.season} format cannot be changed because results already exist for that season.`,
-    );
-  }
-  const id = `${account.id}|${homeSchoolId}|${format.season}`;
-  await db().prepare(
-    `INSERT INTO season_formats
-     (id, account_id, home_school_id, season, boys_singles, girls_singles,
-      boys_doubles, girls_doubles, mixed_doubles, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-     ON CONFLICT(account_id, home_school_id, season) DO UPDATE SET
-       boys_singles = excluded.boys_singles,
-       girls_singles = excluded.girls_singles,
-       boys_doubles = excluded.boys_doubles,
-       girls_doubles = excluded.girls_doubles,
-       mixed_doubles = excluded.mixed_doubles,
-       updated_at = CURRENT_TIMESTAMP`,
-  ).bind(
-    id,
-    account.id,
-    homeSchoolId,
-    format.season,
-    format.boysSingles,
-    format.girlsSingles,
-    format.boysDoubles,
-    format.girlsDoubles,
-    format.mixedDoubles,
-  ).run();
-  return { format };
-}
-
 async function ensureSchool(accountId: string, name: string): Promise<string> {
   const schoolName = name.trim();
   const existing = await db().prepare(
@@ -462,7 +313,6 @@ async function readHomeSchoolId(accountId: string): Promise<string | null> {
     if (Number(demoMatches?.count ?? 0) === 0) {
       await db().batch([
         db().prepare("DELETE FROM player_seasons WHERE account_id = ? AND school_id = ?").bind(accountId, demoHome.id),
-        db().prepare("DELETE FROM season_formats WHERE account_id = ? AND home_school_id = ?").bind(accountId, demoHome.id),
         db().prepare("DELETE FROM player_aliases WHERE account_id = ? AND school_id = ?").bind(accountId, demoHome.id),
         db().prepare("DELETE FROM players WHERE account_id = ? AND school_id = ?").bind(accountId, demoHome.id),
         db().prepare("DELETE FROM opponent_positions WHERE account_id = ? AND home_school_id = ?").bind(accountId, demoHome.id),
@@ -472,9 +322,12 @@ async function readHomeSchoolId(accountId: string): Promise<string | null> {
     }
   }
   await db().prepare(
-    "INSERT INTO model_metadata (key, value) VALUES (?, ?)",
+    "INSERT OR IGNORE INTO model_metadata (key, value) VALUES (?, ?)",
   ).bind(homeKey, rosterLeader.id).run();
-  return rosterLeader.id;
+  const resolved = await db().prepare(
+    "SELECT value FROM model_metadata WHERE key = ?",
+  ).bind(homeKey).first<{ value: string }>();
+  return resolved?.value ?? rosterLeader.id;
 }
 
 async function lockHomeSchool(accountId: string, schoolId: string) {
@@ -489,7 +342,6 @@ async function lockHomeSchool(accountId: string, schoolId: string) {
   if (demoHome?.id && current === demoHome.id && schoolId !== current && demoSeed?.value === "1") {
     await db().batch([
       db().prepare("DELETE FROM player_seasons WHERE account_id = ?").bind(accountId),
-      db().prepare("DELETE FROM season_formats WHERE account_id = ?").bind(accountId),
       db().prepare("DELETE FROM player_aliases WHERE account_id = ?").bind(accountId),
       db().prepare("DELETE FROM players WHERE account_id = ?").bind(accountId),
       db().prepare("DELETE FROM match_events WHERE account_id = ?").bind(accountId),
@@ -509,8 +361,14 @@ async function lockHomeSchool(accountId: string, schoolId: string) {
   }
   if (!current) {
     await db().prepare(
-      "INSERT INTO model_metadata (key, value) VALUES (?, ?)",
+      "INSERT OR IGNORE INTO model_metadata (key, value) VALUES (?, ?)",
     ).bind(metadataKey(accountId, "home_school_id"), schoolId).run();
+    const locked = await db().prepare(
+      "SELECT value FROM model_metadata WHERE key = ?",
+    ).bind(metadataKey(accountId, "home_school_id")).first<{ value: string }>();
+    if (locked?.value !== schoolId) {
+      throw new Error("This site is already locked to a different home school.");
+    }
   }
 }
 
@@ -523,16 +381,10 @@ export async function ensureDemoData(account: AccountContext) {
   const homeId = accountSchoolId(account.id, "North Valley High");
   const opponentId = accountSchoolId(account.id, "East Ridge High");
   const statements = [
-    db().prepare("INSERT INTO schools (id, account_id, name) VALUES (?, ?, ?)").bind(homeId, account.id, "North Valley High"),
-    db().prepare("INSERT INTO schools (id, account_id, name) VALUES (?, ?, ?)").bind(opponentId, account.id, "East Ridge High"),
-    db().prepare("INSERT INTO model_metadata (key, value) VALUES (?, ?)").bind(metadataKey(account.id, "home_school_id"), homeId),
-    db().prepare("INSERT INTO model_metadata (key, value) VALUES (?, '1')").bind(metadataKey(account.id, "demo_seeded")),
-    db().prepare(
-      `INSERT INTO season_formats
-       (id, account_id, home_school_id, season, boys_singles, girls_singles,
-        boys_doubles, girls_doubles, mixed_doubles)
-       VALUES (?, ?, ?, 2026, 4, 4, 3, 3, 3)`,
-    ).bind(`${account.id}|${homeId}|2026`, account.id, homeId),
+    db().prepare("INSERT OR IGNORE INTO schools (id, account_id, name) VALUES (?, ?, ?)").bind(homeId, account.id, "North Valley High"),
+    db().prepare("INSERT OR IGNORE INTO schools (id, account_id, name) VALUES (?, ?, ?)").bind(opponentId, account.id, "East Ridge High"),
+    db().prepare("INSERT OR IGNORE INTO model_metadata (key, value) VALUES (?, ?)").bind(metadataKey(account.id, "home_school_id"), homeId),
+    db().prepare("INSERT OR IGNORE INTO model_metadata (key, value) VALUES (?, '1')").bind(metadataKey(account.id, "demo_seeded")),
   ];
 
   for (const [gender, prefix] of [["Boys", "B"], ["Girls", "G"]] as const) {
@@ -542,13 +394,13 @@ export async function ensureDemoData(account: AccountContext) {
       const rating = preseasonElo(rank, 13);
       statements.push(
         db().prepare(
-          `INSERT INTO players
+          `INSERT OR IGNORE INTO players
            (id, account_id, school_id, player_code, display_name, normalized_name, gender, rank,
             initial_elo, current_elo, first_season, last_season, active)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 2026, 2026, 1)`,
         ).bind(id, account.id, homeId, code, `Player ${code}`, normalizeName(`Player ${code}`), gender, rank, rating, rating),
         db().prepare(
-          "INSERT INTO player_aliases (id, account_id, school_id, alias_code, player_id) VALUES (?, ?, ?, ?, ?)",
+          "INSERT OR IGNORE INTO player_aliases (id, account_id, school_id, alias_code, player_id) VALUES (?, ?, ?, ?, ?)",
         ).bind(`${homeId}:${code.toLowerCase()}`, account.id, homeId, code.toLowerCase(), id),
       );
     }
@@ -561,7 +413,7 @@ export async function ensureDemoData(account: AccountContext) {
       : 3600 - number * 140;
     statements.push(
       db().prepare(
-        `INSERT INTO opponent_positions
+        `INSERT OR IGNORE INTO opponent_positions
          (id, account_id, home_school_id, opponent_school_id, position, current_elo, total_weight, matches_used)
          VALUES (?, ?, ?, ?, ?, ?, 6, 3)`,
       ).bind(`${homeId}|${opponentId}|${position}`, account.id, homeId, opponentId, position, rating),
@@ -581,9 +433,6 @@ export async function getDashboard(account: AccountContext, opponentSchoolId?: s
   const selectedOpponent = schools.find((school) => school.id === opponentSchoolId && school.id !== selectedHome.id)
     ?? schools.find((school) => school.id !== selectedHome.id)
     ?? null;
-  const rosterSeason = await activeRosterSeason(account.id, selectedHome.id);
-  const seasonFormat = await readSeasonFormat(account.id, selectedHome.id, rosterSeason);
-  const seasonFormats = await listSeasonFormats(account.id, selectedHome.id, rosterSeason);
 
   const playerRows = await db().prepare(
     "SELECT * FROM players WHERE account_id = ? AND school_id = ? ORDER BY gender, rank, display_name",
@@ -609,7 +458,7 @@ export async function getDashboard(account: AccountContext, opponentSchoolId?: s
     ).bind(account.id, selectedHome.id, selectedOpponent.id).first<DbCalibration>();
     const offset = Number(calibration?.elo_offset ?? 0);
     const byEvent = new Map(positionRows.results.map((row) => [row.position, row]));
-    positions = seasonFormat.eventOrder.map((position) => {
+    positions = EVENT_ORDER.map((position) => {
       const row = byEvent.get(position);
       return {
         position,
@@ -619,14 +468,9 @@ export async function getDashboard(account: AccountContext, opponentSchoolId?: s
       };
     });
     if (calibration && Number(calibration.meet_count) > 0) {
-      const eventCount = Number(calibration.event_count);
       historicalFit = {
-        actualWinsPerMeet: eventCount > 0
-          ? Number(calibration.actual_wins) / eventCount * seasonFormat.totalEvents
-          : 0,
-        projectedWinsPerMeet: eventCount > 0
-          ? Number(calibration.projected_wins) / eventCount * seasonFormat.totalEvents
-          : 0,
+        actualWinsPerMeet: Number(calibration.actual_wins) / Number(calibration.meet_count),
+        projectedWinsPerMeet: Number(calibration.projected_wins) / Number(calibration.meet_count),
         meetCount: Number(calibration.meet_count),
         eloOffset: offset,
       };
@@ -650,9 +494,6 @@ export async function getDashboard(account: AccountContext, opponentSchoolId?: s
     homeLocked: true,
     players,
     positions,
-    rosterSeason,
-    seasonFormat,
-    seasonFormats,
     yearWeights: yearRows.results.map((row) => ({ year: Number(row.year), weight: Number(row.weight) })),
     matchCount: Number(matchCount?.count ?? 0),
     returningPlayers: players.filter((player) => player.firstSeason < player.lastSeason).length,
@@ -883,7 +724,6 @@ async function parseMatchRows(account: AccountContext, rows: CsvRow[], createOpp
   const lockedHomeSchoolId = await readHomeSchoolId(account.id);
   if (!lockedHomeSchoolId) throw new Error("Import the home-school roster before importing matches.");
   const parsed: ParsedMatch[] = [];
-  const formatByYear = new Map<number, SeasonFormat>();
   for (const [index, row] of rows.entries()) {
     const date = text(row, "date");
     const matchDate = new Date(`${date}T00:00:00Z`);
@@ -892,17 +732,6 @@ async function parseMatchRows(account: AccountContext, rows: CsvRow[], createOpp
       throw new Error(`Match row ${index + 2}: date must use YYYY-MM-DD.`);
     }
     if (!isEventCode(positionText)) throw new Error(`Match row ${index + 2}: invalid position.`);
-    const year = matchDate.getUTCFullYear();
-    let seasonFormat = formatByYear.get(year);
-    if (!seasonFormat) {
-      seasonFormat = await readSeasonFormat(account.id, lockedHomeSchoolId, year);
-      formatByYear.set(year, seasonFormat);
-    }
-    if (!seasonFormat.eventOrder.includes(positionText)) {
-      throw new Error(
-        `Match row ${index + 2}: ${positionText} is not part of the saved ${year} league format.`,
-      );
-    }
     const homeName = text(row, "home_school");
     const opponentName = text(row, "opponent_school");
     const player1 = text(row, "home_player_1");
@@ -938,7 +767,7 @@ async function parseMatchRows(account: AccountContext, rows: CsvRow[], createOpp
     const wins = games.filter(([home, opponent]) => home > opponent).length;
     parsed.push({
       date,
-      year,
+      year: matchDate.getUTCFullYear(),
       homeSchoolId,
       opponentSchoolId,
       position: positionText,
@@ -954,27 +783,21 @@ async function parseMatchRows(account: AccountContext, rows: CsvRow[], createOpp
 }
 
 async function validateCompleteMeet(account: AccountContext, parsed: ParsedMatch[]) {
-  const first = parsed[0];
-  const seasonFormat = await readSeasonFormat(account.id, first.homeSchoolId, first.year);
-  if (parsed.length !== seasonFormat.totalEvents) {
-    throw new Error(`A complete ${first.year} meet requires exactly ${seasonFormat.totalEvents} event results.`);
+  if (parsed.length !== EVENT_ORDER.length) {
+    throw new Error(`A complete meet requires exactly ${EVENT_ORDER.length} event results.`);
   }
+  const first = parsed[0];
   if (parsed.some((match) => match.date !== first.date
     || match.homeSchoolId !== first.homeSchoolId
     || match.opponentSchoolId !== first.opponentSchoolId)) {
     throw new Error("Every event must use the same date, home school, and opponent school.");
   }
   const positions = new Set(parsed.map((match) => match.position));
-  if (positions.size !== seasonFormat.totalEvents
-    || seasonFormat.eventOrder.some((position) => !positions.has(position))) {
-    throw new Error(`The meet must contain every saved ${first.year} position exactly once.`);
+  if (positions.size !== EVENT_ORDER.length || EVENT_ORDER.some((position) => !positions.has(position))) {
+    throw new Error("The meet must contain each of the 17 positions exactly once.");
   }
 
   const usedPlayers = new Set<string>();
-  const singlesRanks = new Map<"BS" | "GS", Array<{ position: EventCode; rank: number }>>([
-    ["BS", []],
-    ["GS", []],
-  ]);
   for (const match of parsed) {
     const firstPlayer = await findPlayer(account.id, match.homeSchoolId, match.player1);
     const secondPlayer = match.player2 ? await findPlayer(account.id, match.homeSchoolId, match.player2) : null;
@@ -985,28 +808,10 @@ async function validateCompleteMeet(account: AccountContext, parsed: ParsedMatch
     const expectedSecondGender = match.position.startsWith("GD") || match.position.startsWith("XD") ? "Girls" : "Boys";
     if (firstPlayer.gender !== expectedFirstGender) throw new Error(`${firstPlayer.display_name} is not eligible for ${match.position}.`);
     if (secondPlayer && secondPlayer.gender !== expectedSecondGender) throw new Error(`${secondPlayer.display_name} is not eligible for ${match.position}.`);
-    if (match.position.startsWith("BS") || match.position.startsWith("GS")) {
-      const seasonRank = await db().prepare(
-        "SELECT rank FROM player_seasons WHERE account_id = ? AND player_id = ? AND season = ?",
-      ).bind(account.id, firstPlayer.id, first.year).first<{ rank: number }>();
-      const prefix = match.position.slice(0, 2) as "BS" | "GS";
-      singlesRanks.get(prefix)?.push({
-        position: match.position,
-        rank: Number(seasonRank?.rank ?? firstPlayer.rank),
-      });
-    }
     for (const player of [firstPlayer, secondPlayer]) {
       if (!player) continue;
       if (usedPlayers.has(player.id)) throw new Error(`${player.display_name} appears more than once in the meet.`);
       usedPlayers.add(player.id);
-    }
-  }
-  for (const [prefix, entries] of singlesRanks) {
-    entries.sort((a, b) => Number(a.position.slice(2)) - Number(b.position.slice(2)));
-    for (let index = 1; index < entries.length; index += 1) {
-      if (entries[index - 1].rank >= entries[index].rank) {
-        throw new Error(`${prefix} positions must follow the ${first.year} ladder order.`);
-      }
     }
   }
 
@@ -1021,7 +826,6 @@ async function validateCompleteMeet(account: AccountContext, parsed: ParsedMatch
 
 async function ratingSnapshot(account: AccountContext, parsed: ParsedMatch[]): Promise<RatingSnapshot> {
   const first = parsed[0];
-  const seasonFormat = await readSeasonFormat(account.id, first.homeSchoolId, first.year);
   const uniqueCodes = [...new Set(parsed.flatMap((match) => [match.player1, match.player2].filter(Boolean) as string[]))];
   const playerMap = new Map<string, { code: string; name: string; elo: number }>();
   for (const code of uniqueCodes) {
@@ -1046,7 +850,7 @@ async function ratingSnapshot(account: AccountContext, parsed: ParsedMatch[]): P
   const raw = new Map(rows.results.map((row) => [row.position, Number(row.current_elo)]));
   return {
     players: playerMap,
-    positions: new Map(seasonFormat.eventOrder.map((position) => [
+    positions: new Map(EVENT_ORDER.map((position) => [
       position,
       (raw.get(position) ?? defaultPositionElo(position)) + offset,
     ])),
@@ -1061,7 +865,6 @@ async function receiptFromSnapshots(
   exact: boolean,
 ): Promise<MeetRatingReceipt> {
   const first = parsed[0];
-  const seasonFormat = await readSeasonFormat(account.id, first.homeSchoolId, first.year);
   const schoolRows = await db().prepare("SELECT id, name FROM schools WHERE account_id = ? AND id IN (?, ?)")
     .bind(account.id, first.homeSchoolId, first.opponentSchoolId).all<{ id: string; name: string }>();
   const names = new Map(schoolRows.results.map((row) => [row.id, row.name]));
@@ -1085,7 +888,7 @@ async function receiptFromSnapshots(
         newElo: newPlayer.elo,
       };
     }),
-    positionChanges: seasonFormat.eventOrder.map((position) => {
+    positionChanges: EVENT_ORDER.map((position) => {
       const oldElo = before.positions.get(position) ?? defaultPositionElo(position);
       const newElo = after.positions.get(position) ?? defaultPositionElo(position);
       return { position, oldElo, change: newElo - oldElo, newElo };
@@ -1158,8 +961,7 @@ export async function confirmMeet(account: AccountContext, rows: CsvRow[]) {
   await validateCompleteMeet(account, parsed);
   const before = await ratingSnapshot(account, parsed);
   const imported = await importMatches(account, rows);
-  const seasonFormat = await readSeasonFormat(account.id, parsed[0].homeSchoolId, parsed[0].year);
-  if (imported.inserted !== seasonFormat.totalEvents) {
+  if (imported.inserted !== EVENT_ORDER.length) {
     throw new Error("The complete meet could not be saved. No duplicate events are allowed.");
   }
   const after = await ratingSnapshot(account, parsed);
