@@ -9,6 +9,7 @@ import {
   type SeasonFormat,
   defaultPositionElo,
   eloWinProbability,
+  fitOpponentEloOffset,
   homePlayerEloChange,
   isEventCode,
   normalizeGender,
@@ -16,11 +17,12 @@ import {
   preseasonElo,
   makeSeasonFormat,
   schoolIdFromName,
+  smoothedHistoricalWins,
 } from "./domain";
 
 const POINT_SCALE = 8;
 const POSITION_SEASON_WINDOW = 10;
-const RATING_MODEL_VERSION = "active-format-match-time-opponent-v4";
+const RATING_MODEL_VERSION = "active-format-match-time-calibrated-once-v5";
 
 type CsvRow = Record<string, string | number | null | undefined>;
 
@@ -676,12 +678,13 @@ export async function getDashboard(account: AccountContext, opponentSchoolId?: s
        FROM opponent_calibrations
        WHERE account_id = ? AND home_school_id = ? AND opponent_school_id = ?`,
     ).bind(account.id, selectedHome.id, selectedOpponent.id).first<DbCalibration>();
+    const offset = Number(calibration?.elo_offset ?? 0);
     const byEvent = new Map(positionRows.results.map((row) => [row.position, row]));
     positions = seasonFormat.eventOrder.map((position) => {
       const row = byEvent.get(position);
       return {
         position,
-        currentElo: Number(row?.current_elo ?? defaultPositionElo(position)),
+        currentElo: Number(row?.current_elo ?? defaultPositionElo(position)) + offset,
         totalWeight: Number(row?.total_weight ?? 0),
         matchesUsed: Number(row?.matches_used ?? 0),
       };
@@ -696,7 +699,7 @@ export async function getDashboard(account: AccountContext, opponentSchoolId?: s
           ? Number(calibration.projected_wins) / eventCount * seasonFormat.totalEvents
           : 0,
         meetCount: Number(calibration.meet_count),
-        eloOffset: 0,
+        eloOffset: offset,
       };
     }
   }
@@ -1260,12 +1263,17 @@ async function ratingSnapshot(account: AccountContext, parsed: ParsedMatch[]): P
      `SELECT position, current_elo FROM opponent_positions
      WHERE account_id = ? AND home_school_id = ? AND opponent_school_id = ?`,
   ).bind(account.id, first.homeSchoolId, first.opponentSchoolId).all<{ position: EventCode; current_elo: number }>();
+  const calibration = await db().prepare(
+     `SELECT elo_offset FROM opponent_calibrations
+     WHERE account_id = ? AND home_school_id = ? AND opponent_school_id = ?`,
+  ).bind(account.id, first.homeSchoolId, first.opponentSchoolId).first<{ elo_offset: number }>();
+  const offset = Number(calibration?.elo_offset ?? 0);
   const raw = new Map(rows.results.map((row) => [row.position, Number(row.current_elo)]));
   return {
     players: playerMap,
     positions: new Map(seasonFormat.eventOrder.map((position) => [
       position,
-      raw.get(position) ?? defaultPositionElo(position),
+      (raw.get(position) ?? defaultPositionElo(position)) + offset,
     ])),
   };
 }
@@ -1327,6 +1335,11 @@ async function estimatedMeetReceipt(account: AccountContext, parsed: ParsedMatch
      `SELECT position, current_elo, total_weight FROM opponent_positions
      WHERE account_id = ? AND home_school_id = ? AND opponent_school_id = ?`,
   ).bind(account.id, first.homeSchoolId, first.opponentSchoolId).all<{ position: EventCode; current_elo: number; total_weight: number }>();
+  const calibration = await db().prepare(
+     `SELECT elo_offset FROM opponent_calibrations
+     WHERE account_id = ? AND home_school_id = ? AND opponent_school_id = ?`,
+  ).bind(account.id, first.homeSchoolId, first.opponentSchoolId).first<{ elo_offset: number }>();
+  const offset = Number(calibration?.elo_offset ?? 0);
   const positionState = new Map(positionRows.results.map((row) => [row.position, {
     elo: Number(row.current_elo),
     weight: Number(row.total_weight),
@@ -1350,7 +1363,7 @@ async function estimatedMeetReceipt(account: AccountContext, parsed: ParsedMatch
     const nextRaw = priorWeight > 0
       ? (rawOpponentElo * priorWeight + observation * yearWeight) / newWeight
       : observation;
-    after.positions.set(match.position, nextRaw);
+    after.positions.set(match.position, nextRaw + offset);
   }
   return receiptFromSnapshots(account, parsed, before, after, false);
 }
@@ -1617,17 +1630,21 @@ async function recomputeRatings(accountId: string) {
     meetCount: number;
   }> = [];
   for (const [id, group] of historyGroups) {
-    const projectedWins = group.samples.reduce((total, sample) => {
+    const samples = group.samples.flatMap((sample) => {
       const opponentElo = positionStates.get(sample.positionId)?.elo;
-      return opponentElo === undefined
-        ? total
-        : total + eloWinProbability(sample.homeElo, opponentElo);
-    }, 0);
+      return opponentElo === undefined ? [] : [{ homeElo: sample.homeElo, opponentElo }];
+    });
+    const targetWins = smoothedHistoricalWins(group.actualWins, samples.length);
+    const offset = fitOpponentEloOffset(samples, targetWins);
+    const projectedWins = samples.reduce(
+      (total, sample) => total + eloWinProbability(sample.homeElo, sample.opponentElo + offset),
+      0,
+    );
     calibrations.push({
       id,
       homeSchoolId: group.homeSchoolId,
       opponentSchoolId: group.opponentSchoolId,
-      offset: 0,
+      offset,
       actualWins: group.actualWins,
       projectedWins,
       eventCount: group.eventCount,
