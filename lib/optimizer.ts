@@ -182,7 +182,15 @@ export function optimizeLineup(
   const adjustedRatings = new Map(
     [...ratings].map(([event, rating]) => [event, rating + lineupOffset]),
   );
-  const lineup = assignments(best.state, adjustedRatings, format);
+  const anchoredLineup = assignments(best.state, adjustedRatings, format);
+  const baseOpponentByEvent = new Map(
+  rawLineup.map((row) => [row.event, row.opponentElo]),
+);
+
+const lineup = anchoredLineup.map((row) => ({
+  ...row,
+  opponentElo: baseOpponentByEvent.get(row.event) ?? row.opponentElo,
+}));
 
   return {
     lineup,

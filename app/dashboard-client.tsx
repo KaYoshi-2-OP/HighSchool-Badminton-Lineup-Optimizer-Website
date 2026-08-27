@@ -1,4 +1,4 @@
-"use client";
+"use client";import type { EventCode } from "../lib/domain";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ClaudeImportAssistant from "./claude-import-assistant";
@@ -17,7 +17,7 @@ type Player = {
   lastSeason: number;
   active: boolean;
 };
-type Position = { position: string; currentElo: number; totalWeight: number; matchesUsed: number };
+type Position = { position: EventCode; currentElo: number; totalWeight: number; matchesUsed: number };;
 type SeasonFormat = {
   season: number;
   boysSingles: number;
@@ -25,7 +25,7 @@ type SeasonFormat = {
   boysDoubles: number;
   girlsDoubles: number;
   mixedDoubles: number;
-  eventOrder: string[];
+  eventOrder: EventCode[];
   totalEvents: number;
   winsNeeded: number;
   requiredBoys: number;
@@ -54,7 +54,7 @@ type DashboardData = {
   demo: boolean;
 };
 type LineupRow = {
-  event: string;
+  event: EventCode;
   playerCodes: string[];
   playerNames: string[];
   playerElo: number;
@@ -86,7 +86,7 @@ type ResultRow = {
 };
 type Tab = "dashboard" | "players" | "results" | "data";
 
-const defaultEventOrder = [
+const defaultEventOrder: EventCode[] = [
   "BS1", "BS2", "BS3", "BS4",
   "GS1", "GS2", "GS3", "GS4",
   "BD1", "BD2", "BD3",
@@ -339,13 +339,13 @@ export default function DashboardClient({ currentUser }: { currentUser: { userna
       const result = optimizeLineup(
         data.players,
         data.positions,
-        undefined,
+        data.historicalFit?.actualWinsPerMeet,
         data.seasonFormat,
       );
       setOptimization(result);
       setNotice({
         tone: "success",
-        text: `A legal ${data.seasonFormat.totalEvents}-event lineup was found using the saved league format. Historical fit is shown for comparison only.`,
+        text: `A legal ${data.seasonFormat.totalEvents}-event lineup was found using the saved league format. The projection is anchored to recorded historical results.`,
       });
     } catch (error) {
       setNotice({ tone: "error", text: error instanceof Error ? error.message : "Optimization failed." });
@@ -489,7 +489,7 @@ export default function DashboardClient({ currentUser }: { currentUser: { userna
             </section>
 
             <section className="metric-grid">
-              <article><p>Expected Wins</p><strong>{optimization ? optimization.expectedWins.toFixed(2) : "—"}<small>/{data.seasonFormat.totalEvents}</small></strong><span>{optimization ? "Rating-based lineup projection" : `Using the ${data.rosterSeason} league format`}</span></article>
+              <article><p>Expected Wins</p><strong>{optimization ? optimization.expectedWins.toFixed(2) : "—"}<small>/{data.seasonFormat.totalEvents}</small></strong><span>{optimization ? "History-anchored lineup projection" : `Using the ${data.rosterSeason} league format`}</span></article>
               <article><p>Meet Win Probability</p><strong>{meetProbability === null ? "—" : `${Math.round(meetProbability * 100)}%`}</strong><span>{meetProbability === null ? `Calculated from ${data.seasonFormat.totalEvents} events` : `Probability of at least ${data.seasonFormat.winsNeeded} wins`}</span></article>
               <article><p>Historical Fit</p><strong>{data.historicalFit ? `${data.historicalFit.actualWinsPerMeet.toFixed(1)} ≈ ${data.historicalFit.projectedWinsPerMeet.toFixed(1)}` : "—"}</strong><span>{data.historicalFit ? `Actual vs model across ${data.historicalFit.meetCount} meet${data.historicalFit.meetCount === 1 ? "" : "s"}` : "No recorded meets for this opponent"}</span></article>
             </section>
