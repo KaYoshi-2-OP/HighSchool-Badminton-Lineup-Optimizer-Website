@@ -339,13 +339,14 @@ export default function DashboardClient({ currentUser }: { currentUser: { userna
       const result = optimizeLineup(
         data.players,
         data.positions,
-        data.historicalFit?.actualWinsPerMeet,
+        undefined,
         data.seasonFormat,
       );
       setOptimization(result);
-      setNotice({ tone: "success", text: data.historicalFit
-        ? `A legal lineup was found and anchored to ${data.historicalFit.meetCount} recorded meet${data.historicalFit.meetCount === 1 ? "" : "s"}.`
-        : `A high-scoring legal lineup has been found across ${result.searches} starting configurations.` });
+      setNotice({
+        tone: "success",
+        text: `A legal ${data.seasonFormat.totalEvents}-event lineup was found using the saved league format. Historical fit is shown for comparison only.`,
+      });
     } catch (error) {
       setNotice({ tone: "error", text: error instanceof Error ? error.message : "Optimization failed." });
     } finally { setOptimizing(false); }
@@ -488,7 +489,7 @@ export default function DashboardClient({ currentUser }: { currentUser: { userna
             </section>
 
             <section className="metric-grid">
-              <article><p>Expected Wins</p><strong>{optimization ? optimization.expectedWins.toFixed(2) : "—"}<small>/{data.seasonFormat.totalEvents}</small></strong><span>{optimization ? (data.historicalFit ? "History-anchored lineup projection" : "Best search projection") : `Using the ${data.rosterSeason} league format`}</span></article>
+              <article><p>Expected Wins</p><strong>{optimization ? optimization.expectedWins.toFixed(2) : "—"}<small>/{data.seasonFormat.totalEvents}</small></strong><span>{optimization ? "Rating-based lineup projection" : `Using the ${data.rosterSeason} league format`}</span></article>
               <article><p>Meet Win Probability</p><strong>{meetProbability === null ? "—" : `${Math.round(meetProbability * 100)}%`}</strong><span>{meetProbability === null ? `Calculated from ${data.seasonFormat.totalEvents} events` : `Probability of at least ${data.seasonFormat.winsNeeded} wins`}</span></article>
               <article><p>Historical Fit</p><strong>{data.historicalFit ? `${data.historicalFit.actualWinsPerMeet.toFixed(1)} ≈ ${data.historicalFit.projectedWinsPerMeet.toFixed(1)}` : "—"}</strong><span>{data.historicalFit ? `Actual vs model across ${data.historicalFit.meetCount} meet${data.historicalFit.meetCount === 1 ? "" : "s"}` : "No recorded meets for this opponent"}</span></article>
             </section>
