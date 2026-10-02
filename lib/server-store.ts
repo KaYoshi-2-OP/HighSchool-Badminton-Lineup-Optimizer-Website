@@ -22,7 +22,7 @@ import {
 
 const POINT_SCALE = 8;
 const POSITION_SEASON_WINDOW = 10;
-const RATING_MODEL_VERSION = "active-format-match-time-calibrated-once-v5";
+const RATING_MODEL_VERSION = "active-format-full-match-time-calibrated-once-v6";
 
 type CsvRow = Record<string, string | number | null | undefined>;
 
@@ -1542,7 +1542,7 @@ async function recomputeRatings(accountId: string) {
     actualWins: number;
     eventCount: number;
     dates: Set<string>;
-    samples: Array<{ homeElo: number; positionId: string }>;
+    samples: Array<{ homeElo: number; opponentElo: number }>;
   }>();
 
   for (const event of events) {
@@ -1590,7 +1590,9 @@ async function recomputeRatings(accountId: string) {
     history.actualWins += Number(event.home_won);
     history.eventCount += 1;
     history.dates.add(event.match_date);
-    history.samples.push({ homeElo, positionId });
+    // Freeze both sides of the matchup before this event so later rating
+    // changes cannot rewrite an earlier calibration sample.
+    history.samples.push({ homeElo, opponentElo: priorOpponentElo });
     historyGroups.set(historyKey, history);
 
     const margin = Math.abs(Number(event.point_differential));
@@ -1630,10 +1632,7 @@ async function recomputeRatings(accountId: string) {
     meetCount: number;
   }> = [];
   for (const [id, group] of historyGroups) {
-    const samples = group.samples.flatMap((sample) => {
-      const opponentElo = positionStates.get(sample.positionId)?.elo;
-      return opponentElo === undefined ? [] : [{ homeElo: sample.homeElo, opponentElo }];
-    });
+    const samples = group.samples;
     const targetWins = smoothedHistoricalWins(group.actualWins, samples.length);
     const offset = fitOpponentEloOffset(samples, targetWins);
     const projectedWins = samples.reduce(
