@@ -62,7 +62,12 @@ Before entering a season's results, users choose the number of boys singles, gir
 - Positional observation: `home participant Elo − 8 × point differential`
 - Opponent positional Elo: weighted mean of positional observations within the active ten-season window
 - Doubles team Elo: sum of both players’ Elo ratings
+- School-level historical calibration: one opponent-wide Elo offset fitted from prior events only
+- Optimizer projection: calculated directly from the calibrated positional Elo values; no second lineup-level historical anchor
+- Standard 17-event optimizer search: 120 deterministic starts, up to 40 improving swap rounds per start
 
 Changing the league format does not change any Elo or probability formula. It only changes the legal event set and the lineup assignments evaluated by the optimizer.
+
+The frozen research model is `active-format-full-match-time-calibrated-once-v6`.
 
 See the research paper and source comments for the assumptions, limitations, and validation plan.
