@@ -61,7 +61,7 @@ type LineupRow = {
   opponentElo: number;
   winProbability: number;
 };
-type Optimization = { lineup: LineupRow[]; expectedWins: number; rawExpectedWins: number; searches: number };
+type Optimization = { lineup: LineupRow[]; expectedWins: number; searches: number };
 type RatingChange = { oldElo: number; change: number; newElo: number };
 type MeetReceipt = {
   exact: boolean;
@@ -339,13 +339,12 @@ export default function DashboardClient({ currentUser }: { currentUser: { userna
       const result = optimizeLineup(
         data.players,
         data.positions,
-        data.historicalFit?.actualWinsPerMeet,
         data.seasonFormat,
       );
       setOptimization(result);
       setNotice({
         tone: "success",
-        text: `A legal ${data.seasonFormat.totalEvents}-event lineup was found using the saved league format. The projection is anchored to recorded historical results.`,
+        text: `A legal ${data.seasonFormat.totalEvents}-event lineup was found using the saved league format and the current v6 rating state.`,
       });
     } catch (error) {
       setNotice({ tone: "error", text: error instanceof Error ? error.message : "Optimization failed." });
@@ -489,7 +488,7 @@ export default function DashboardClient({ currentUser }: { currentUser: { userna
             </section>
 
             <section className="metric-grid">
-              <article><p>Expected Wins</p><strong>{optimization ? optimization.expectedWins.toFixed(2) : "—"}<small>/{data.seasonFormat.totalEvents}</small></strong><span>{optimization ? "History-anchored lineup projection" : `Using the ${data.rosterSeason} league format`}</span></article>
+              <article><p>Expected Wins</p><strong>{optimization ? optimization.expectedWins.toFixed(2) : "—"}<small>/{data.seasonFormat.totalEvents}</small></strong><span>{optimization ? "Model-estimated lineup projection" : `Using the ${data.rosterSeason} league format`}</span></article>
               <article><p>Meet Win Probability</p><strong>{meetProbability === null ? "—" : `${Math.round(meetProbability * 100)}%`}</strong><span>{meetProbability === null ? `Calculated from ${data.seasonFormat.totalEvents} events` : `Probability of at least ${data.seasonFormat.winsNeeded} wins`}</span></article>
               <article><p>Historical Fit</p><strong>{data.historicalFit ? `${data.historicalFit.actualWinsPerMeet.toFixed(1)} ≈ ${data.historicalFit.projectedWinsPerMeet.toFixed(1)}` : "—"}</strong><span>{data.historicalFit ? `Actual vs model across ${data.historicalFit.meetCount} meet${data.historicalFit.meetCount === 1 ? "" : "s"}` : "No recorded meets for this opponent"}</span></article>
             </section>
@@ -614,7 +613,7 @@ export default function DashboardClient({ currentUser }: { currentUser: { userna
             </section>
             <section className="panel rating-panel">
               <div className="panel-heading"><div><p className="eyebrow">STABILITY + HISTORICAL CALIBRATION</p><h2>Grounded rating updates</h2></div><span className="formula">ΔE = 2 × |PD| × (A − P)</span></div>
-              <p>Home-player Elo now uses K = 2, sharply reducing movement from a single event. Doubles partners split the event adjustment equally. Each opponent receives a school-level correction so its historical predictions match the recorded results closely. The final optimized score is then placed halfway between the historical average and the unrestricted model estimate, preventing unsupported jumps while still allowing lineup improvement.</p>
+              <p>Home-player Elo uses K = 2, adjusted by absolute point differential and prediction error. Doubles partners split the event adjustment equally. Each opponent receives one school-level historical calibration offset. The optimizer then scores legal lineups directly from those calibrated positional Elo values, with no second lineup-level anchor.</p>
             </section>
           </div>
         )}
