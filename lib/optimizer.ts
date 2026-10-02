@@ -6,7 +6,6 @@ import {
   type SeasonFormat,
   defaultPositionElo,
   eloWinProbability,
-  fitOpponentEloOffset,
   makeSeasonFormat,
 } from "./domain";
 
@@ -133,9 +132,8 @@ function improve(initial: State, ratings: Map<EventCode, number>, format: Season
 export function optimizeLineup(
   allPlayers: PlayerRecord[],
   positionRatings: PositionRating[],
-  historicalWinsPerMeet?: number,
   format: SeasonFormat = makeSeasonFormat(2026, DEFAULT_EVENT_COUNTS),
-): { lineup: OptimizedAssignment[]; expectedWins: number; rawExpectedWins: number; searches: number } {
+): { lineup: OptimizedAssignment[]; expectedWins: number; searches: number } {
   const active = allPlayers.filter((player) => player.active);
   const boys = active.filter((player) => player.gender === "Boys")
     .sort((a, b) => b.currentElo - a.currentElo).slice(0, format.requiredBoys);
@@ -168,34 +166,11 @@ export function optimizeLineup(
     if (candidate.score > best.score) best = candidate;
   }
 
-  const rawLineup = assignments(best.state, ratings, format);
-  const hasHistoricalAnchor = Number.isFinite(historicalWinsPerMeet);
-  const targetWins = hasHistoricalAnchor
-    ? Number(historicalWinsPerMeet) + 0.5 * (best.score - Number(historicalWinsPerMeet))
-    : best.score;
-  const lineupOffset = hasHistoricalAnchor
-    ? fitOpponentEloOffset(
-        rawLineup.map((row) => ({ homeElo: row.playerElo, opponentElo: row.opponentElo })),
-        targetWins,
-      )
-    : 0;
-  const adjustedRatings = new Map(
-    [...ratings].map(([event, rating]) => [event, rating + lineupOffset]),
-  );
-  const anchoredLineup = assignments(best.state, adjustedRatings, format);
-  const baseOpponentByEvent = new Map(
-  rawLineup.map((row) => [row.event, row.opponentElo]),
-);
-
-const lineup = anchoredLineup.map((row) => ({
-  ...row,
-  opponentElo: baseOpponentByEvent.get(row.event) ?? row.opponentElo,
-}));
+  const lineup = assignments(best.state, ratings, format);
 
   return {
     lineup,
     expectedWins: lineup.reduce((sum, row) => sum + row.winProbability, 0),
-    rawExpectedWins: best.score,
     searches,
   };
 }
