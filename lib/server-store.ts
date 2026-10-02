@@ -22,7 +22,7 @@ import {
 
 const POINT_SCALE = 8;
 const POSITION_SEASON_WINDOW = 10;
-const RATING_MODEL_VERSION = "active-format-match-time-calibrated-once-v5";
+const RATING_MODEL_VERSION = "active-format-full-match-time-calibrated-once-v6";
 
 type CsvRow = Record<string, string | number | null | undefined>;
 
