@@ -75,10 +75,14 @@ test("the optimizer uses a custom format without changing Elo formulas", () => {
     totalWeight: 0,
     matchesUsed: 0,
   }));
-  const result = optimizeLineup(players, positions, undefined, format);
+  const result = optimizeLineup(players, positions, format);
   assert.equal(result.lineup.length, 21);
   assert.deepEqual(result.lineup.map((row) => row.event), format.eventOrder);
   assert.equal(result.searches, 200);
+  for (const row of result.lineup) {
+    const reproduced = 1 / (1 + Math.pow(10, (row.opponentElo - row.playerElo) / 400));
+    assert.ok(Math.abs(row.winProbability - reproduced) < 1e-12);
+  }
   const used = result.lineup.flatMap((row) => row.playerCodes);
   assert.equal(new Set(used).size, used.length);
   const boysSingles = result.lineup.filter((row) => row.event.startsWith("BS"));
