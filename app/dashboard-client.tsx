@@ -84,6 +84,7 @@ type ResultRow = {
   g3Home: string;
   g3Opponent: string;
 };
+type ApiError = { error?: string };
 type Tab = "dashboard" | "players" | "results" | "data";
 
 const defaultEventOrder: EventCode[] = [
@@ -238,7 +239,7 @@ export default function DashboardClient({ currentUser }: { currentUser: { userna
         window.location.reload();
         return;
       }
-      const payload = await response.json();
+      const payload = await response.json() as DashboardData & ApiError;
       if (!response.ok) throw new Error(payload.error ?? "Could not load data.");
       setData(payload);
       setOpponentId(payload.selectedOpponent?.id ?? "");
@@ -315,9 +316,10 @@ export default function DashboardClient({ currentUser }: { currentUser: { userna
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: action === "preview" ? "preview_meet" : "confirm_meet", rows: matchPayloadRows() }),
       });
-      const payload = await response.json();
+      const payload = await response.json() as ApiError & Partial<MeetReceipt> & { receipt?: MeetReceipt };
       if (!response.ok) throw new Error(payload.error ?? "The meet could not be processed.");
-      const nextReceipt = action === "preview" ? payload : payload.receipt;
+      const nextReceipt = action === "preview" ? payload as MeetReceipt : payload.receipt;
+      if (!nextReceipt) throw new Error("The server did not return a meet receipt.");
       setReceipt(nextReceipt);
       if (action === "preview") {
         setNotice({ tone: "success", text: "Preview ready. Review every change before confirming the meet." });
@@ -344,7 +346,7 @@ export default function DashboardClient({ currentUser }: { currentUser: { userna
       setOptimization(result);
       setNotice({
         tone: "success",
-        text: `A legal ${data.seasonFormat.totalEvents}-event lineup was found using the saved league format and the current v6 rating state.`,
+        text: `A ${data.seasonFormat.totalEvents}-event lineup satisfying the implemented slot, gender, uniqueness, and singles-rank constraints was found. Pair order-of-skill still requires coach review.`,
       });
     } catch (error) {
       setNotice({ tone: "error", text: error instanceof Error ? error.message : "Optimization failed." });
@@ -360,7 +362,12 @@ export default function DashboardClient({ currentUser }: { currentUser: { userna
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: kind === "roster" ? "import_rosters" : "import_matches", rows }),
       });
-      const payload = await response.json();
+      const payload = await response.json() as ApiError & {
+        created?: number;
+        continued?: number;
+        inserted?: number;
+        duplicates?: number;
+      };
       if (!response.ok) throw new Error(payload.error ?? "Import failed.");
       const summary = kind === "roster"
         ? `${payload.created} new players added; ${payload.continued} returning-player records preserved.`
@@ -394,10 +401,11 @@ export default function DashboardClient({ currentUser }: { currentUser: { userna
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "save_season_format", ...formatDraft }),
       });
-      const payload = await response.json();
+      const payload = await response.json() as ApiError & { format?: SeasonFormat };
       if (!response.ok) throw new Error(payload.error ?? "The league format could not be saved.");
       await loadData(opponentId);
-      const saved = payload.format as SeasonFormat;
+      if (!payload.format) throw new Error("The server did not return the saved league format.");
+      const saved = payload.format;
       setFormatDraft({
         season: saved.season,
         boysSingles: saved.boysSingles,
@@ -494,11 +502,11 @@ export default function DashboardClient({ currentUser }: { currentUser: { userna
             </section>
 
             <section className="panel lineup-panel">
-              <div className="panel-heading"><div><p className="eyebrow">PROJECTED RESULT</p><h2>Optimized lineup</h2></div>{optimization && <span className="status-pill"><Icon name="check"/>Legal lineup verified</span>}</div>
+              <div className="panel-heading"><div><p className="eyebrow">PROJECTED RESULT</p><h2>Optimized lineup</h2></div>{optimization && <span className="status-pill"><Icon name="check"/>Implemented constraints verified</span>}</div>
               {optimization ? (
                 <div className="table-wrap"><table><thead><tr><th>Event</th><th>Player / Pair</th><th>Player Elo</th><th>Opponent Elo</th><th>Projected Win</th></tr></thead><tbody>{optimization.lineup.map((row) => <tr key={row.event}><td><span className={`event-chip ${row.event.slice(0, 2).toLowerCase()}`}>{row.event}</span></td><td><strong>{row.playerNames.join(" / ")}</strong><small>{row.playerCodes.join(" / ")}</small></td><td>{Math.round(row.playerElo)}</td><td>{Math.round(row.opponentElo)}</td><td><div className="probability"><span>{Math.round(row.winProbability * 100)}%</span><i><b style={{ width: `${Math.round(row.winProbability * 100)}%` }}/></i></div></td></tr>)}</tbody></table></div>
               ) : (
-                <div className="empty-lineup"><div className="empty-icon"><Icon name="shuttle"/></div><h3>Ready to calculate a lineup</h3><p>Select an opponent and run the optimizer. The home school is fixed, and the historical calibration keeps the projected score grounded in recorded results while the search compares legal lineups.</p><button className="secondary-button" onClick={() => void optimize()}>Run first projection</button></div>
+                <div className="empty-lineup"><div className="empty-icon"><Icon name="shuttle"/></div><h3>Ready to calculate a lineup</h3><p>Select an opponent and run the optimizer. The search compares lineups that satisfy the implemented constraints. It does not certify doubles or mixed-doubles order-of-skill; a coach must review pair ordering.</p><button className="secondary-button" onClick={() => void optimize()}>Run first projection</button></div>
               )}
             </section>
           </>
@@ -613,7 +621,7 @@ export default function DashboardClient({ currentUser }: { currentUser: { userna
             </section>
             <section className="panel rating-panel">
               <div className="panel-heading"><div><p className="eyebrow">STABILITY + HISTORICAL CALIBRATION</p><h2>Grounded rating updates</h2></div><span className="formula">ΔE = 2 × |PD| × (A − P)</span></div>
-              <p>Home-player Elo uses K = 2, adjusted by absolute point differential and prediction error. Doubles partners split the event adjustment equally. Each opponent receives one school-level historical calibration offset. The optimizer then scores legal lineups directly from those calibrated positional Elo values, with no second lineup-level anchor.</p>
+              <p>Home-player Elo uses K = 2, adjusted by absolute point differential and prediction error. Doubles partners split the event adjustment equally. Each opponent receives one school-level historical calibration offset. The optimizer scores lineups satisfying its implemented constraints directly from those calibrated positional Elo values, with no second lineup-level anchor. Pair order-of-skill is not modeled.</p>
             </section>
           </div>
         )}

@@ -732,23 +732,6 @@ export async function getDashboard(account: AccountContext, opponentSchoolId?: s
   };
 }
 
-async function findPlayer(accountId: string, schoolId: string, code: string, name?: string) {
-  const normalizedCode = code.trim().toLowerCase();
-  const byAlias = normalizedCode
-    ? await db().prepare(
-        `SELECT p.* FROM player_aliases a
-         JOIN players p ON p.id = a.player_id
-         WHERE a.account_id = ? AND a.school_id = ? AND a.alias_code = ?`,
-      ).bind(accountId, schoolId, normalizedCode).first<DbPlayer>()
-    : null;
-  if (byAlias) return byAlias;
-  const normalized = normalizeName(name ?? "");
-  if (!normalized) return null;
-  return db().prepare(
-    "SELECT * FROM players WHERE account_id = ? AND school_id = ? AND normalized_name = ? LIMIT 1",
-  ).bind(accountId, schoolId, normalized).first<DbPlayer>();
-}
-
 export async function importRosters(account: AccountContext, rows: CsvRow[]) {
   await ensureSchema();
   if (!rows.length) throw new Error("The roster CSV contains no data rows.");

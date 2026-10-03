@@ -18,7 +18,7 @@ The saved counts determine:
 
 - the numbered positions generated for the season;
 - the exact rows accepted in match imports and result entry;
-- the number of boys and girls required in a legal lineup;
+- the number of boys and girls required by the implemented lineup constraints;
 - the number of event assignments considered by the optimizer;
 - the projected meet score; and
 - the strict-majority threshold for an outright meet win.
@@ -43,7 +43,7 @@ An even number of events is allowed, but the meet can end in a tie.
 The preseason initialization curve, Elo win probability, home-player update,
 point-differential observation, rolling ten-season weighting, doubles rating,
 and historical calibration formulas are unchanged. The format only changes the
-event set and the legal lineup combinations searched.
+event set and the lineup combinations searched under the implemented constraints.
 
 The optimizer uses 120 search starts for the standard 17-event format. For a
 larger meet it adds 20 starts per event above 17, up to 600 starts:

@@ -111,8 +111,8 @@ function improve(initial: State, ratings: Map<EventCode, number>, format: Season
         for (let second = first + 1; second < slots.length; second += 1) {
           [slots[first], slots[second]] = [slots[second], slots[first]];
           const singlesCount = gender === "boys" ? format.boysSingles : format.girlsSingles;
-          const legal = validSingles(slots, singlesCount);
-          const candidateScore = legal ? score(state, ratings, format) : -Infinity;
+          const satisfiesImplementedConstraints = validSingles(slots, singlesCount);
+          const candidateScore = satisfiesImplementedConstraints ? score(state, ratings, format) : -Infinity;
           [slots[first], slots[second]] = [slots[second], slots[first]];
           if (candidateScore > bestScore + 1e-10) {
             bestScore = candidateScore;

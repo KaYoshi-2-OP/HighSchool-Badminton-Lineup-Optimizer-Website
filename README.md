@@ -1,6 +1,6 @@
 # High School Badminton Lineup Optimizer
 
-A full-stack website for high school badminton programs. It maintains a continuous Elo history for the home roster, estimates each opponent school’s positional strength from weighted historical results, and searches legal lineups for the highest expected number of event wins.
+A full-stack website for high school badminton programs. It maintains a continuous Elo history for the home roster, estimates each opponent school’s positional strength from weighted historical results, and searches lineups satisfying its implemented constraints for the highest expected number of event wins.
 
 ## Main features
 
@@ -11,7 +11,7 @@ A full-stack website for high school badminton programs. It maintains a continuo
 - Ten-season rolling weights for opponent positional ratings
 - Actual lineup and score entry with previewed rating changes
 - Per-season league formats with separate BS, GS, BD, GD, and XD counts
-- Format-aware legal-lineup search with additional search starts for larger meets
+- Format-aware lineup search with additional search starts for larger meets
 - CSV roster and historical-match imports
 
 ## Account security
@@ -66,8 +66,16 @@ Before entering a season's results, users choose the number of boys singles, gir
 - Optimizer projection: calculated directly from the calibrated positional Elo values; no second lineup-level historical anchor
 - Standard 17-event optimizer search: 120 deterministic starts, up to 40 improving swap rounds per start
 
-Changing the league format does not change any Elo or probability formula. It only changes the legal event set and the lineup assignments evaluated by the optimizer.
+Changing the league format does not change any Elo or probability formula. It only changes the event set and the lineup assignments evaluated by the optimizer.
+
+## Rules boundary
+
+The optimizer enforces filled slots, unique athletes, gender-category assignments, distinct partners, and ascending supplied ranks in singles. It does **not** quantify or enforce order-of-skill for doubles or mixed doubles. Those pair-order decisions are difficult to infer when skill differences are small and must be reviewed by a coach against the applicable league rules. The website is therefore not a lineup-eligibility or rules-certification system.
+
+## Research evaluation
+
+The aggregate v6 audit is recorded in [`audit/verified-results-v6.json`](audit/verified-results-v6.json). Authorized users can regenerate it with private input files by setting `RESEARCH_DATA_DIR` and running `npm run evaluate`. The raw student records are intentionally not committed. See [`audit/README.md`](audit/README.md) for file names, hashes, and interpretation limits.
 
 The frozen research model is `active-format-full-match-time-calibrated-once-v6`.
 
-See the research paper and source comments for the assumptions, limitations, and validation plan.
+See the research paper, audit notes, and source comments for the assumptions, limitations, and validation plan.

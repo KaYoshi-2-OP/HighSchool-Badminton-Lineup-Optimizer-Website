@@ -1,0 +1,94 @@
+{
+  "modelVersion": "active-format-full-match-time-calibrated-once-v6",
+  "verifiedDate": "2026-10-01",
+  "inputSha256": {
+    "historical_matches_analysis_ready.csv": "7e82ccb6e54c0ae17246ccbc7096a8181a307eeb59a3c896a2234b3a7de2c10d",
+    "seasonal_rosters(1).csv": "cc595a39fd68ccc9d7adca0b212739302391245f0948502d3eff631fb5c3cc0d",
+    "missing_player_season_rankings.csv": "c4cc1c2372c898e470ab7aa220d2c576b67ac9cb6082a53b6e18c244b07d0558"
+  },
+  "variants": [
+    {
+      "id": "no-imputation",
+      "options": { "impute": false, "excludeEmerald": false, "excludeRepeatedGroups": false },
+      "summary": {
+        "meets": 9, "events": 153, "accuracy": 0.5816993464052288,
+        "brier": 0.34392112526322915, "logLoss": 1.3313539346959642,
+        "ece": 0.3011168019837286, "rollingOverallBrier": 0.2245695760603963,
+        "rollingOverallLogLoss": 0.6429037058361929, "alwaysWinAccuracy": 0.6862745098039216,
+        "meetAccuracy": 0.5555555555555556, "alwaysWinMeetAccuracy": 0.7777777777777778,
+        "observedWins": 105, "expectedWins": 76.37761827124157,
+        "optimizedWins": 125.08699333034009, "objectiveDifference": 48.709375059098534
+      }
+    },
+    {
+      "id": "bottom-rank-imputation",
+      "options": { "impute": true, "excludeEmerald": false, "excludeRepeatedGroups": false },
+      "summary": {
+        "meets": 25, "events": 425, "accuracy": 0.6776470588235294,
+        "brier": 0.2650737805495879, "logLoss": 1.0516231945443635,
+        "ece": 0.2207800052826306, "rollingOverallBrier": 0.2205098712254631,
+        "rollingOverallLogLoss": 0.6336781826691588, "alwaysWinAccuracy": 0.6847058823529412,
+        "meetAccuracy": 0.8, "alwaysWinMeetAccuracy": 0.84,
+        "observedWins": 291, "expectedWins": 275.0251873222365,
+        "optimizedWins": 365.79789195312776, "objectiveDifference": 90.7727046308912
+      }
+    },
+    {
+      "id": "bottom-rank-imputation-emerald-excluded",
+      "options": { "impute": true, "excludeEmerald": true, "excludeRepeatedGroups": false },
+      "summary": {
+        "meets": 22, "events": 374, "accuracy": 0.6898395721925134,
+        "brier": 0.25338880696917226, "logLoss": 0.9504682130957334,
+        "ece": 0.20703049637536758, "rollingOverallBrier": 0.22497256165442786,
+        "rollingOverallLogLoss": 0.6429898881193343, "alwaysWinAccuracy": 0.6737967914438503,
+        "meetAccuracy": 0.8181818181818182, "alwaysWinMeetAccuracy": 0.8181818181818182,
+        "observedWins": 252, "expectedWins": 243.3280897789055,
+        "optimizedWins": 317.75800865368853, "objectiveDifference": 74.42991887478296
+      }
+    },
+    {
+      "id": "no-imputation-repeats-excluded",
+      "options": { "impute": false, "excludeEmerald": false, "excludeRepeatedGroups": true },
+      "summary": {
+        "meets": 7, "events": 119, "accuracy": 0.6302521008403361,
+        "brier": 0.3028092288795676, "logLoss": 1.145299396929114,
+        "ece": 0.27801423344820664, "rollingOverallBrier": 0.2053610004696694,
+        "rollingOverallLogLoss": 0.6019765454686843, "alwaysWinAccuracy": 0.7310924369747899,
+        "meetAccuracy": 0.5714285714285714, "alwaysWinMeetAccuracy": 0.8571428571428571,
+        "observedWins": 87, "expectedWins": 68.5946509804613,
+        "optimizedWins": 99.92886583268834, "objectiveDifference": 31.33421485222707
+      }
+    },
+    {
+      "id": "bottom-rank-imputation-repeats-excluded",
+      "options": { "impute": true, "excludeEmerald": false, "excludeRepeatedGroups": true },
+      "summary": {
+        "meets": 23, "events": 391, "accuracy": 0.7084398976982097,
+        "brier": 0.24208765042624927, "logLoss": 0.9814277586731547,
+        "ece": 0.20517256626150904, "rollingOverallBrier": 0.214443038850202,
+        "rollingOverallLogLoss": 0.6208416410207386, "alwaysWinAccuracy": 0.6982097186700768,
+        "meetAccuracy": 0.8260869565217391, "alwaysWinMeetAccuracy": 0.8695652173913043,
+        "observedWins": 273, "expectedWins": 270.67200063945967,
+        "optimizedWins": 344.0351352834514, "objectiveDifference": 73.36313464399159
+      }
+    },
+    {
+      "id": "bottom-rank-imputation-repeats-and-emerald-excluded",
+      "options": { "impute": true, "excludeEmerald": true, "excludeRepeatedGroups": true },
+      "summary": {
+        "meets": 20, "events": 340, "accuracy": 0.7205882352941176,
+        "brier": 0.22589411160884204, "logLoss": 0.848006500604132,
+        "ece": 0.18103512925473575, "rollingOverallBrier": 0.2186465397026352,
+        "rollingOverallLogLoss": 0.6296986687532314, "alwaysWinAccuracy": 0.6882352941176471,
+        "meetAccuracy": 0.85, "alwaysWinMeetAccuracy": 0.85,
+        "observedWins": 234, "expectedWins": 238.4290067376347,
+        "optimizedWins": 295.9888535287061, "objectiveDifference": 57.55984679107145
+      }
+    }
+  ],
+  "coldStartCheck": {
+    "date": "2024-04-18", "opponent": "CVC", "actualWins": 17,
+    "historicalLineupExpectedWins": 2.4602459111323602,
+    "optimizedLineupExpectedWins": 14.100412626275485
+  }
+}

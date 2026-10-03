@@ -57,7 +57,7 @@ export default function AuthClient() {
         <div className="auth-brand"><span><AuthMark /></span><strong>Badminton Lineup Optimizer</strong></div>
         <p className="eyebrow">SEASON-AWARE TEAM ANALYTICS</p>
         <h1>Make every lineup decision with evidence.</h1>
-        <p>Maintain one school’s roster, preserve player Elo across seasons, update opponent positional ratings, and search every legal lineup.</p>
+        <p>Maintain one school’s roster, preserve player Elo across seasons, update opponent positional ratings, and search lineups under the implemented constraints.</p>
         <div className="auth-benefits">
           <article><b>01</b><div><strong>Separate team workspace</strong><span>Each account has its own rosters, match history, and ratings.</span></div></article>
           <article><b>02</b><div><strong>Persistent rating history</strong><span>Returning players retain their earned Elo from prior seasons.</span></div></article>
